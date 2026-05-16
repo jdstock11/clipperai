@@ -1,0 +1,144 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id             String         @id @default(cuid())
+  email          String         @unique
+  name           String?
+  password       String?
+  role           Role           @default(USER)
+  downloads      Download[]     @relation("UserDownloads")
+  clips          Clip[]         @relation("UserClips")
+  subscriptions  Subscription[] @relation("UserSubscriptions")
+  payments       Payment[]      @relation("UserPayments")
+  exportHistory  ExportHistory[] @relation("UserExportHistory")
+  adminLogs      AdminLog[]     @relation("UserAdminLogs")
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@index([email])
+  @@map("users")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+model Download {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation("UserDownloads", fields: [userId], references: [id], onDelete: Cascade)
+  url       String
+  title     String
+  format    String
+  quality   String
+  fileSize  Int?
+  status    Status   @default(PENDING)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("downloads")
+}
+
+model Clip {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation("UserClips", fields: [userId], references: [id], onDelete: Cascade)
+  sourceUrl String
+  startTime Float
+  endTime   Float
+  format    String
+  quality   String
+  status    Status   @default(PENDING)
+  fileUrl   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("clips")
+}
+
+enum Status {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Subscription {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation("UserSubscriptions", fields: [userId], references: [id], onDelete: Cascade)
+  planId    String
+  status    SubStatus @default(ACTIVE)
+  startDate DateTime @default(now())
+  endDate   DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("subscriptions")
+}
+
+enum SubStatus {
+  ACTIVE
+  CANCELED
+  EXPIRED
+}
+
+model Payment {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation("UserPayments", fields: [userId], references: [id], onDelete: Cascade)
+  amount        Float
+  currency      String   @default("USD")
+  provider      String   // Stripe, Razorpay
+  transactionId String   @unique
+  status        PaymentStatus @default(PENDING)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId])
+  @@map("payments")
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+model ExportHistory {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation("UserExportHistory", fields: [userId], references: [id], onDelete: Cascade)
+  fileUrl     String
+  type        String   // Reel, Short, Landscape
+  aspectRatio String
+  platform    String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@map("export_history")
+}
+
+model AdminLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation("UserAdminLogs", fields: [userId], references: [id], onDelete: Cascade)
+  action    String
+  details   String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("admin_logs")
+}
