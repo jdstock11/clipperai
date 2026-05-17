@@ -120,41 +120,36 @@ export class VideoService {
    */
   static async encodePreview(inputPath: string, previewId: string): Promise<string> {
     const outputPath = path.join(DIRS.previews, `${previewId}_encoded.mp4`);
-    console.log(`[preview] Encoding preview → ${outputPath}`);
+
+    console.log(`[preview] Encoding HD preview → ${outputPath}`);
 
     return new Promise<string>((resolve, reject) => {
       ffmpeg(inputPath)
+        .videoCodec('libx264')
+        .audioCodec('aac')
         .outputOptions([
-          '-vf', 'scale=1280:-2',
-          '-c:v', 'libx264',
-          '-preset', 'veryfast',
-          '-crf', '18',
-          '-c:a', 'aac',
-          '-b:a', '192k',
-          '-ac', '2',
-          '-ar', '44100',
-          '-movflags', '+faststart',
-          '-pix_fmt', 'yuv420p',
-          '-threads', '1'
+          '-vf scale=1280:-2',
+          '-preset veryfast',
+          '-crf 21',
+          '-movflags +faststart',
+          '-pix_fmt yuv420p',
+          '-threads 1',
+          '-r 24',
+          '-b:a 192k',
+          '-ac 2',
+          '-ar 44100'
         ])
-        .on('start', (cmd) => {
-          console.log('[preview] FFmpeg started:', cmd.slice(0, 200));
-        })
-        .on('progress', (p) => {
-          if (p.percent) {
-            process.stdout.write(`\r[preview] Encoding: ${p.percent.toFixed(1)}%`);
-          }
-        })
+        .toFormat('mp4')
         .on('end', () => {
-          console.log('\n[preview] Encoding complete');
           if (fileExists(outputPath)) {
+            console.log('[preview] HD preview generated');
             resolve(outputPath);
           } else {
-            reject(new Error('Encoded preview missing after FFmpeg'));
+            reject(new Error('Encoded preview missing'));
           }
         })
         .on('error', (err) => {
-          console.error('\n[preview] FFmpeg encode error:', err.message);
+          console.error('[preview] FFmpeg encode error:', err.message);
           reject(err);
         })
         .save(outputPath);
