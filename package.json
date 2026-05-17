@@ -4,9 +4,9 @@
   "description": "YouTube Video Downloader + Clip Creator SaaS",
   "scripts": {
     "postinstall": "npm run install:all",
-    "install:all": "npm install --prefix clipperai && npm install --prefix backend",
+    "install:all": "npm install --prefix clipperai",
     "dev": "concurrently \"npm run dev --prefix clipperai\" \"npm run dev --prefix backend\"",
-    "build": "npm run build --prefix clipperai && npm run build --prefix backend",
+    "build": "npm run build --prefix clipperai",
     "start": "concurrently \"npm start --prefix clipperai\" \"npm start --prefix backend\""
   },
   "devDependencies": {
