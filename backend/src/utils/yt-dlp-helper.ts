@@ -4,8 +4,39 @@ import YTDlpWrap from 'yt-dlp-wrap';
 import os from 'os';
 
 const isWin = process.platform === 'win32';
-const ytDlpPath = path.join(__dirname, isWin ? '../../yt-dlp.exe' : '../../yt-dlp');
+// Step 7: Use safe path resolution
+const tempDir = process.env.VERCEL || !isWin ? '/tmp' : os.tmpdir();
+const ytDlpPath = path.join(tempDir, isWin ? 'yt-dlp.exe' : 'yt-dlp');
+
 let ytDlpWrap: YTDlpWrap | null = null;
+
+// Step 2 & 10: Download yt-dlp dynamically with fallback
+export async function ensureYtDlpExists(forceDownload = false): Promise<void> {
+  console.log("[yt-dlp] Checking binary at:", ytDlpPath);
+  
+  if (!forceDownload && fs.existsSync(ytDlpPath)) {
+    console.log("[yt-dlp] Binary exists.");
+    try {
+      if (!isWin) fs.chmodSync(ytDlpPath, 0o755);
+    } catch {}
+    return;
+  }
+
+  console.log("[yt-dlp] Downloading yt-dlp...");
+  try {
+    const wrap = new YTDlpWrap();
+    // downloadFromGithub defaults to Linux if not windows
+    await wrap.downloadFromGithub(ytDlpPath);
+    console.log("[yt-dlp] Downloaded successfully to:", ytDlpPath);
+    if (!isWin) {
+      // Step 4: Add executable permission
+      fs.chmodSync(ytDlpPath, 0o755);
+    }
+  } catch (error: any) {
+    console.error("[yt-dlp] Download failed:", error.message);
+    throw new Error("Failed to download yt-dlp binary");
+  }
+}
 
 export function setupCookies(): string | null {
   const cookiePath = path.join(__dirname, '../../cookies.txt');
@@ -20,8 +51,13 @@ export function setupCookies(): string | null {
   return null;
 }
 
-export function getYtDlpWrap() {
+export async function getYtDlpWrap(): Promise<YTDlpWrap> {
   if (!ytDlpWrap) {
+    // Step 8: Verify file exists before spawn
+    if (!fs.existsSync(ytDlpPath)) {
+      console.log("[yt-dlp] Binary missing before spawn, trying fallback download...");
+      await ensureYtDlpExists(true);
+    }
     ytDlpWrap = new YTDlpWrap(ytDlpPath);
   }
   return ytDlpWrap;
@@ -43,7 +79,7 @@ export async function executeYtDlpWithRetry(
   timeoutMs: number = 25000,
   maxRetries: number = 2
 ): Promise<string> {
-  const yt = getYtDlpWrap();
+  const yt = await getYtDlpWrap();
   const cookiesPath = setupCookies();
   
   let lastError: Error | null = null;

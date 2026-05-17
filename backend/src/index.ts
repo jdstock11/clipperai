@@ -10,7 +10,7 @@ import { VideoService, DIRS } from './services/video.service';
 import { renderQueue } from './queue/renderQueue';
 import multer from 'multer';
 import './workers/renderWorker';
-import { executeYtDlpWithRetry } from './utils/yt-dlp-helper';
+import { executeYtDlpWithRetry, ensureYtDlpExists, getYtDlpWrap } from './utils/yt-dlp-helper';
 
 // Simple in-memory cache for metadata
 const metadataCache = new Map<string, { data: any, timestamp: number }>();
@@ -19,21 +19,19 @@ const CACHE_TTL_MS = 1000 * 60 * 60; // 1 hour
 dotenv.config();
 
 // ── yt-dlp binary ────────────────────────────────────────────────────
-const isWin = process.platform === 'win32';
-const ytDlpPath = path.join(__dirname, isWin ? '../yt-dlp.exe' : '../yt-dlp');
-if (!fs.existsSync(ytDlpPath)) {
-  console.log('[yt-dlp] Downloading binary...');
-  YTDlpWrap.downloadFromGithub(ytDlpPath)
-    .then(() => console.log('[yt-dlp] Downloaded to', ytDlpPath))
-    .catch(e => console.error('[yt-dlp] Download failed:', e.message));
-} else {
-  // Auto-update yt-dlp on startup (Step 7)
+// Run dynamic initialization and updates on startup
+ensureYtDlpExists().then(async () => {
   console.log('[yt-dlp] Checking for updates...');
-  const yt = new YTDlpWrap(ytDlpPath);
-  yt.execPromise(['-U'])
-    .then(output => console.log('[yt-dlp] Update status:', output.trim()))
-    .catch(e => console.error('[yt-dlp] Auto-update failed:', e.message));
-}
+  try {
+    const yt = await getYtDlpWrap();
+    const output = await yt.execPromise(['-U']);
+    console.log('[yt-dlp] Update status:', output.trim());
+  } catch (e: any) {
+    console.error('[yt-dlp] Auto-update failed:', e.message);
+  }
+}).catch(e => {
+  console.error('[yt-dlp] Startup binary check failed:', e.message);
+});
 
 // ── Express ──────────────────────────────────────────────────────────
 const app = express();

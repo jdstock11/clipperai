@@ -4,11 +4,10 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import YTDlpWrap from 'yt-dlp-wrap';
+import ffprobeStatic from 'ffprobe-static';
 import { executeYtDlpWithRetry } from '../utils/yt-dlp-helper';
 
 const isWin = process.platform === 'win32';
-const ytDlpPath = path.join(__dirname, isWin ? '../../yt-dlp.exe' : '../../yt-dlp');
-const ytDlpWrap = new YTDlpWrap(ytDlpPath);
 
 // ── Directory setup ──────────────────────────────────────────────────
 const ROOT = path.join(__dirname, '../..');
@@ -32,18 +31,15 @@ Object.values(DIRS).forEach(d => {
 
 // ── FFmpeg / FFprobe path resolution ─────────────────────────────────
 const ffmpegDir = ffmpegStatic ? path.dirname(ffmpegStatic) : '';
-if (ffmpegStatic) ffmpeg.setFfmpegPath(ffmpegStatic);
+if (ffmpegStatic) {
+  ffmpeg.setFfmpegPath(ffmpegStatic);
+  console.log('[ffmpeg] Using binary:', ffmpegStatic);
+}
 
 // Locate ffprobe binary shipped by ffprobe-static
-const FFPROBE_CANDIDATES = [
-  path.join(ROOT, 'node_modules/ffprobe-static/bin/win32/x64/ffprobe.exe'),
-  path.join(ROOT, 'node_modules/ffprobe-static/bin/darwin/x64/ffprobe'),
-  path.join(ROOT, 'node_modules/ffprobe-static/bin/linux/x64/ffprobe'),
-];
-const ffprobeBin = FFPROBE_CANDIDATES.find(p => fs.existsSync(p));
-if (ffprobeBin) {
-  ffmpeg.setFfprobePath(ffprobeBin);
-  console.log('[ffprobe] Using binary:', ffprobeBin);
+if (ffprobeStatic && ffprobeStatic.path) {
+  ffmpeg.setFfprobePath(ffprobeStatic.path);
+  console.log('[ffprobe] Using binary:', ffprobeStatic.path);
 } else {
   console.warn('[ffprobe] Binary NOT found – metadata features disabled');
 }
