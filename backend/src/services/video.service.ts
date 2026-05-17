@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import YTDlpWrap from 'yt-dlp-wrap';
+import { executeYtDlpWithRetry } from '../utils/yt-dlp-helper';
 
 const isWin = process.platform === 'win32';
 const ytDlpPath = path.join(__dirname, isWin ? '../../yt-dlp.exe' : '../../yt-dlp');
@@ -72,45 +73,36 @@ export class VideoService {
     const outputPath = path.join(DIRS.previews, `${previewId}_raw.mp4`);
     console.log(`[preview] Downloading full video → ${outputPath}`);
 
-    return new Promise<string>((resolve, reject) => {
-      const args = [
-        url,
-        '--no-playlist',
-        // Prefer MP4+M4A for native browser compatibility; fallback to best available
-        '-f', 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best',
-        '--merge-output-format', 'mp4',
-        '--no-warnings',
-        '-o', outputPath,
-      ];
+    const args = [
+      url,
+      '--no-playlist',
+      // Prefer MP4+M4A for native browser compatibility; fallback to best available
+      '-f', 'bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best',
+      '--merge-output-format', 'mp4',
+      '--no-warnings',
+      '-o', outputPath,
+    ];
 
-      if (ffmpegDir) {
-        args.push('--ffmpeg-location', ffmpegDir);
+    if (ffmpegDir) {
+      args.push('--ffmpeg-location', ffmpegDir);
+    }
+
+    try {
+      // Use robust retry system for downloads, 30s timeout is too short for a full download, use 300s
+      await executeYtDlpWithRetry(args, 300000, 3);
+      
+      const actual = findDownloadedFile(DIRS.previews, `${previewId}_raw`);
+      if (actual && fileExists(actual)) {
+        const sizeMB = (fs.statSync(actual).size / 1048576).toFixed(1);
+        console.log(`[preview] Download complete: ${actual} (${sizeMB} MB)`);
+        return actual;
+      } else {
+        throw new Error('Preview file not created by yt-dlp');
       }
-
-      const proc = ytDlpWrap.exec(args);
-
-      let stderr = '';
-      proc.on('error', (err: Error) => {
-        console.error('[preview] yt-dlp error:', err.message);
-        reject(new Error('Download failed: ' + err.message));
-      });
-
-      if ((proc as any).ytDlpProcess?.stderr) {
-        (proc as any).ytDlpProcess.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-      }
-
-      proc.on('close', (code) => {
-        const actual = findDownloadedFile(DIRS.previews, `${previewId}_raw`);
-        if (actual && fileExists(actual)) {
-          const sizeMB = (fs.statSync(actual).size / 1048576).toFixed(1);
-          console.log(`[preview] Download complete: ${actual} (${sizeMB} MB)`);
-          resolve(actual);
-        } else {
-          console.error('[preview] File missing after download. code:', code, 'stderr:', stderr.slice(-500));
-          reject(new Error('Preview file not created by yt-dlp'));
-        }
-      });
-    });
+    } catch (err: any) {
+      console.error('[preview] yt-dlp download error:', err.message);
+      throw new Error('Download failed: ' + err.message);
+    }
   }
 
   /**

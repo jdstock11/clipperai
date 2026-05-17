@@ -10,6 +10,11 @@ import { VideoService, DIRS } from './services/video.service';
 import { renderQueue } from './queue/renderQueue';
 import multer from 'multer';
 import './workers/renderWorker';
+import { executeYtDlpWithRetry } from './utils/yt-dlp-helper';
+
+// Simple in-memory cache for metadata
+const metadataCache = new Map<string, { data: any, timestamp: number }>();
+const CACHE_TTL_MS = 1000 * 60 * 60; // 1 hour
 
 dotenv.config();
 
@@ -21,6 +26,13 @@ if (!fs.existsSync(ytDlpPath)) {
   YTDlpWrap.downloadFromGithub(ytDlpPath)
     .then(() => console.log('[yt-dlp] Downloaded to', ytDlpPath))
     .catch(e => console.error('[yt-dlp] Download failed:', e.message));
+} else {
+  // Auto-update yt-dlp on startup (Step 7)
+  console.log('[yt-dlp] Checking for updates...');
+  const yt = new YTDlpWrap(ytDlpPath);
+  yt.execPromise(['-U'])
+    .then(output => console.log('[yt-dlp] Update status:', output.trim()))
+    .catch(e => console.error('[yt-dlp] Auto-update failed:', e.message));
 }
 
 // ── Express ──────────────────────────────────────────────────────────
@@ -80,30 +92,28 @@ app.post('/api/fetch-video', async (req, res) => {
     console.log('[fetch] URL:', url);
     console.log('[fetch] Temp dir:', DIRS.temp);
 
-    const yt = new YTDlpWrap(ytDlpPath);
-    
-    // Add lightweight metadata fetch with common fallback arguments for serverless/bot protection
+    // Step 10: Cache Video Metadata
+    const cached = metadataCache.get(url);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      console.log('[fetch] Returning cached metadata for:', url);
+      return res.json(cached.data);
+    }
+
     const args = [
       url, 
       '--no-playlist', 
       '--dump-json',
-      '--no-warnings',
-      '--extractor-args', 'youtube:player_client=android,web'
+      '--no-warnings'
     ];
 
-    // Implement timeout protection (25s)
-    const fetchPromise = yt.execPromise(args);
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Video too large or source unavailable.')), 25000)
-    );
-
-    const raw = await Promise.race([fetchPromise, timeoutPromise]) as string;
+    // Use robust retry system with bot bypassing
+    const raw = await executeYtDlpWithRetry(args, 25000, 2);
     const m = JSON.parse(raw);
 
     let videoId = '';
     try { const u = new URL(url); videoId = u.searchParams.get('v') || u.pathname.split('/').pop() || ''; } catch { }
 
-    res.json({
+    const responseData = {
       title: m.title,
       thumbnail: m.thumbnail,
       duration: m.duration,
@@ -113,7 +123,11 @@ app.post('/api/fetch-video', async (req, res) => {
       videoId,
       width: m.width || 1920,
       height: m.height || 1080,
-    });
+    };
+
+    metadataCache.set(url, { data: responseData, timestamp: Date.now() });
+
+    res.json(responseData);
   } catch (error: any) {
     console.error('FULL FETCH ERROR:', error);
     res.status(500).json({ error: error.message || 'Failed to fetch video metadata' });
