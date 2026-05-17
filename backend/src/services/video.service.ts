@@ -2,6 +2,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import ffmpegStatic from 'ffmpeg-static';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import YTDlpWrap from 'yt-dlp-wrap';
 
 const isWin = process.platform === 'win32';
@@ -10,11 +11,13 @@ const ytDlpWrap = new YTDlpWrap(ytDlpPath);
 
 // ── Directory setup ──────────────────────────────────────────────────
 const ROOT = path.join(__dirname, '../..');
+const tempDir = process.env.VERCEL || !isWin ? '/tmp' : os.tmpdir();
+
 const DIRS = {
-  uploads: path.join(ROOT, 'uploads'),
-  previews: path.join(ROOT, 'previews'),
-  thumbnails: path.join(ROOT, 'thumbnails'),
-  temp: path.join(ROOT, 'temp'),
+  uploads: path.join(tempDir, 'clipforge_uploads'),
+  previews: path.join(tempDir, 'clipforge_previews'),
+  thumbnails: path.join(tempDir, 'clipforge_thumbnails'),
+  temp: path.join(tempDir, 'clipforge_temp'),
 };
 // Create every required directory on startup
 Object.values(DIRS).forEach(d => {
@@ -274,7 +277,7 @@ export class VideoService {
         let y = Math.round(watermark.y * meta.height);
         let w = Math.round(watermark.w * meta.width);
         let h = Math.round(watermark.h * meta.height);
-        
+
         // Ensure boundaries are strictly valid
         x = Math.max(0, Math.min(x, meta.width - 2));
         y = Math.max(0, Math.min(y, meta.height - 2));
@@ -304,7 +307,7 @@ export class VideoService {
           reject(new Error('FFmpeg processing timeout (hung for 30s)'));
         }, 30000);
       };
-      
+
       resetTimeout();
 
       // Fast input-seeking + precise duration trim
@@ -394,7 +397,7 @@ export class VideoService {
         .on('progress', (p) => {
           resetTimeout();
           let currentPercent = p.percent;
-          
+
           if (!currentPercent && p.timemark && targetDuration > 0) {
             // Parse timemark "00:00:05.50"
             const parts = p.timemark.split(':');
@@ -406,7 +409,7 @@ export class VideoService {
               currentPercent = Math.min(99, (elapsed / targetDuration) * 100);
             }
           }
-          
+
           if (currentPercent && onProgress) {
             onProgress(currentPercent);
           }
@@ -460,7 +463,7 @@ export class VideoService {
         let y = Math.round(watermark.y * meta.height);
         let w = Math.round(watermark.w * meta.width);
         let h = Math.round(watermark.h * meta.height);
-        
+
         // Strictly constrain values
         x = Math.max(0, Math.min(x, meta.width - 2));
         y = Math.max(0, Math.min(y, meta.height - 2));
@@ -487,7 +490,7 @@ export class VideoService {
           reject(new Error('FFmpeg processing timeout (hung for 30s)'));
         }, 30000);
       };
-      
+
       resetTimeout();
       let filterComplex = '';
       const concatInputs: string[] = [];
@@ -503,7 +506,7 @@ export class VideoService {
       filterComplex += `${concatInputs.join('')}concat=n=${cuts.length}:v=1:a=1[concatv][concata];`;
 
       let finalV = 'concatv';
-      
+
       // Apply watermark removal to the concatenated video
       if (watermarkFilter) {
         filterComplex += `[${finalV}]${watermarkFilter}[cleanv];`;
@@ -539,10 +542,10 @@ export class VideoService {
 
       cmd
         .on('start', (cmdLine) => console.log(`[clip-multi] FFmpeg started: ${cmdLine.slice(0, 200)}`))
-        .on('progress', (p) => { 
+        .on('progress', (p) => {
           resetTimeout();
           let currentPercent = p.percent;
-          
+
           if (!currentPercent && p.timemark && targetDuration > 0) {
             const parts = p.timemark.split(':');
             if (parts.length === 3) {
@@ -553,7 +556,7 @@ export class VideoService {
               currentPercent = Math.min(99, (elapsed / targetDuration) * 100);
             }
           }
-          
+
           if (currentPercent && onProgress) {
             onProgress(currentPercent);
           }

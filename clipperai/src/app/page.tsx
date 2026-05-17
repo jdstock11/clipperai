@@ -22,6 +22,8 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [errorToast, setErrorToast] = useState("");
+  const [abortController, setAbortController] = useState<AbortController | null>(null);
   const router = useRouter();
 
   useEffect(() => { setMounted(true); }, []);
@@ -29,28 +31,45 @@ export default function Home() {
   const handleFetchVideo = async (targetUrl: string, destination: string) => {
     if (!targetUrl) return;
     setIsLoading(true);
+    setErrorToast("");
+
+    const controller = new AbortController();
+    setAbortController(controller);
 
     try {
       const res = await fetch("/api/fetch-video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: targetUrl }),
+        signal: controller.signal
       });
+      
       const data = await res.json();
 
       if (data.title) {
         sessionStorage.setItem("videoData", JSON.stringify(data));
         router.push(destination);
       } else if (data.error) {
-        alert("Failed to fetch video: " + data.error);
+        setErrorToast("Failed: " + data.error);
       } else {
-        alert("Failed to fetch video. Ensure the URL is valid and accessible.");
+        setErrorToast("Failed to fetch video. Ensure the URL is valid and accessible.");
       }
     } catch (error: any) {
-      console.error("Error:", error);
-      alert("An unexpected error occurred: " + error.message);
+      if (error.name === 'AbortError') {
+        setErrorToast("Fetch cancelled by user.");
+      } else {
+        console.error("Error:", error);
+        setErrorToast("An unexpected error occurred: " + error.message);
+      }
     } finally {
       setIsLoading(false);
+      setAbortController(null);
+    }
+  };
+
+  const handleCancel = () => {
+    if (abortController) {
+      abortController.abort();
     }
   };
 
@@ -168,14 +187,24 @@ export default function Home() {
                   onChange={(e) => setUrl(e.target.value)}
                   placeholder="Paste YouTube or Reel URL..."
                   className="w-full bg-transparent outline-none pl-10 pr-3 py-3 text-sm text-white placeholder-[var(--muted)]"
-                />
-                <button
-                  type="submit"
                   disabled={isLoading}
-                  className="btn-glow px-4 py-3 rounded-lg text-sm font-bold flex items-center justify-center min-w-[100px] disabled:opacity-50"
-                >
-                  {isLoading ? <span className="animate-spin w-4 h-4 border-2 border-[var(--background)] border-t-transparent rounded-full" /> : "Start"}
-                </button>
+                />
+                {isLoading ? (
+                  <button
+                    type="button"
+                    onClick={handleCancel}
+                    className="bg-red-500/20 text-red-400 hover:bg-red-500/40 px-4 py-3 rounded-lg text-sm font-bold flex items-center justify-center min-w-[100px] transition-colors"
+                  >
+                    Cancel
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    className="btn-glow px-4 py-3 rounded-lg text-sm font-bold flex items-center justify-center min-w-[100px]"
+                  >
+                    Start
+                  </button>
+                )}
               </div>
             </form>
           </div>
@@ -202,14 +231,24 @@ export default function Home() {
                   onChange={(e) => setCutUrl(e.target.value)}
                   placeholder="Paste URL or upload..."
                   className="w-full bg-transparent outline-none pl-4 pr-3 py-3 text-sm text-white placeholder-[var(--muted)]"
-                />
-                <button
-                  type="submit"
                   disabled={isLoading}
-                  className="bg-gradient-to-r from-[var(--accent)] to-purple-500 hover:opacity-90 px-4 py-3 rounded-lg text-sm font-bold flex items-center justify-center min-w-[100px] text-white disabled:opacity-50 transition-opacity"
-                >
-                  {isLoading ? <span className="animate-spin w-4 h-4 border-2 border-[var(--background)] border-t-transparent rounded-full" /> : "Open"}
-                </button>
+                />
+                {isLoading ? (
+                  <button
+                    type="button"
+                    onClick={handleCancel}
+                    className="bg-red-500/20 text-red-400 hover:bg-red-500/40 px-4 py-3 rounded-lg text-sm font-bold flex items-center justify-center min-w-[100px] transition-colors"
+                  >
+                    Cancel
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    className="bg-gradient-to-r from-[var(--accent)] to-purple-500 hover:opacity-90 px-4 py-3 rounded-lg text-sm font-bold flex items-center justify-center min-w-[100px] text-white transition-opacity"
+                  >
+                    Open
+                  </button>
+                )}
               </div>
             </form>
             <div className="w-full mt-3">
@@ -335,6 +374,26 @@ export default function Home() {
           <p className="text-[var(--muted)] text-sm">© 2026 ClipForge. All rights reserved.</p>
         </div>
       </footer>
+      {/* ── Toast Error ───────────────────────────────────────── */}
+      {errorToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] animate-in fade-in slide-in-from-bottom-5">
+          <div className="glass-strong border border-red-500/30 bg-red-500/10 text-red-200 px-6 py-4 rounded-xl shadow-2xl flex items-center gap-3 max-w-lg w-full">
+            <div className="w-8 h-8 rounded-full bg-red-500/20 flex items-center justify-center shrink-0">
+              <Zap className="w-4 h-4 text-red-400" />
+            </div>
+            <div className="flex-1 text-sm font-medium leading-relaxed">
+              {errorToast}
+            </div>
+            <button 
+              onClick={() => setErrorToast("")}
+              className="text-red-400 hover:text-white transition-colors"
+            >
+              <ArrowRight className="w-4 h-4 rotate-45" />
+            </button>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

@@ -28,8 +28,8 @@ export async function POST(request: Request) {
     data.url = url;
 
     return NextResponse.json(data);
-  } catch (error) {
-    console.error('Error fetching video:', error);
-    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+  } catch (error: any) {
+    console.error('FULL FETCH ERROR:', error);
+    return NextResponse.json({ error: error.message || 'Internal Server Error' }, { status: 500 });
   }
 }

@@ -46,15 +46,15 @@ app.post('/api/upload-video', upload.single('video'), async (req, res) => {
 
     const previewId = `pv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const newPath = path.join(DIRS.previews, `${previewId}_raw${path.extname(file.originalname)}`);
-    
+
     fs.renameSync(file.path, newPath);
-    
+
     const metadata = await VideoService.getVideoMetadata(newPath);
-    
+
     // We return a "fake" URL that the frontend can use to reference this local file
     const streamUrl = `/api/stream/${path.basename(newPath)}`;
     res.json({
-      url: `local://${newPath}`, 
+      url: `local://${newPath}`,
       streamUrl,
       duration: metadata.duration,
       status: 'ready'
@@ -76,13 +76,32 @@ app.post('/api/fetch-video', async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).json({ error: 'URL is required' });
 
-    console.log('[fetch] Getting metadata for:', url);
+    console.log('[fetch] Fetch started');
+    console.log('[fetch] URL:', url);
+    console.log('[fetch] Temp dir:', DIRS.temp);
+
     const yt = new YTDlpWrap(ytDlpPath);
-    const raw = await yt.execPromise([url, '--no-playlist', '--dump-json']);
+    
+    // Add lightweight metadata fetch with common fallback arguments for serverless/bot protection
+    const args = [
+      url, 
+      '--no-playlist', 
+      '--dump-json',
+      '--no-warnings',
+      '--extractor-args', 'youtube:player_client=android,web'
+    ];
+
+    // Implement timeout protection (25s)
+    const fetchPromise = yt.execPromise(args);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Video too large or source unavailable.')), 25000)
+    );
+
+    const raw = await Promise.race([fetchPromise, timeoutPromise]) as string;
     const m = JSON.parse(raw);
 
     let videoId = '';
-    try { const u = new URL(url); videoId = u.searchParams.get('v') || u.pathname.split('/').pop() || ''; } catch {}
+    try { const u = new URL(url); videoId = u.searchParams.get('v') || u.pathname.split('/').pop() || ''; } catch { }
 
     res.json({
       title: m.title,
@@ -96,8 +115,8 @@ app.post('/api/fetch-video', async (req, res) => {
       height: m.height || 1080,
     });
   } catch (error: any) {
-    console.error('[fetch] Error:', error.message);
-    res.status(500).json({ error: 'Failed to fetch video metadata' });
+    console.error('FULL FETCH ERROR:', error);
+    res.status(500).json({ error: error.message || 'Failed to fetch video metadata' });
   }
 });
 
@@ -120,7 +139,7 @@ app.post('/api/prepare-preview', async (req, res) => {
   try {
     const rawPath = await VideoService.downloadPreview(url, previewId);
     let finalPath = rawPath;
-    
+
     try {
       finalPath = await VideoService.encodePreview(rawPath, previewId);
     } catch {
@@ -203,13 +222,13 @@ app.post('/api/cut-video', async (req, res) => {
     });
 
     const clip = await prisma.clip.create({
-      data: { 
-        userId: 'demo-user', 
-        sourceUrl, 
-        startTime: startTime || 0, 
-        endTime: endTime || 0, 
-        format: format || 'landscape', 
-        quality: 'MVP', 
+      data: {
+        userId: 'demo-user',
+        sourceUrl,
+        startTime: startTime || 0,
+        endTime: endTime || 0,
+        format: format || 'landscape',
+        quality: 'MVP',
         status: 'PENDING',
         cuts: cuts ? cuts : undefined
       }
@@ -370,7 +389,7 @@ app.use('/previews', express.static(DIRS.previews));
 app.use('/thumbnails', express.static(DIRS.thumbnails));
 
 // ── Periodic cleanup (every hour) ────────────────────────────────────
-setInterval(() => { try { VideoService.cleanup(); } catch {} }, 3600000);
+setInterval(() => { try { VideoService.cleanup(); } catch { } }, 3600000);
 
 // ── Start ────────────────────────────────────────────────────────────
 server.listen(PORT, () => {
