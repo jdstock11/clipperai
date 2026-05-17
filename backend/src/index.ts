@@ -7,6 +7,9 @@ import path from 'path';
 import YTDlpWrap from 'yt-dlp-wrap';
 import fs from 'fs';
 import { VideoService, DIRS } from './services/video.service';
+import { renderQueue } from './queue/renderQueue';
+import multer from 'multer';
+import './workers/renderWorker';
 
 dotenv.config();
 
@@ -32,6 +35,35 @@ const PORT = process.env.PORT || 4000;
 // =====================================================================
 // ENDPOINTS
 // =====================================================================
+
+const upload = multer({ dest: DIRS.temp, limits: { fileSize: 500 * 1024 * 1024 } });
+
+// ── Upload video (Local File) ────────────────────────────────────────
+app.post('/api/upload-video', upload.single('video'), async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: 'No video file provided' });
+
+    const previewId = `pv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const newPath = path.join(DIRS.previews, `${previewId}_raw${path.extname(file.originalname)}`);
+    
+    fs.renameSync(file.path, newPath);
+    
+    const metadata = await VideoService.getVideoMetadata(newPath);
+    
+    // We return a "fake" URL that the frontend can use to reference this local file
+    const streamUrl = `/api/stream/${path.basename(newPath)}`;
+    res.json({
+      url: `local://${newPath}`, 
+      streamUrl,
+      duration: metadata.duration,
+      status: 'ready'
+    });
+  } catch (error: any) {
+    console.error('[upload] Error:', error.message);
+    res.status(500).json({ error: 'Upload failed: ' + error.message });
+  }
+});
 
 // ── Health check ─────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
@@ -154,7 +186,108 @@ app.get('/api/stream/:filename', (req, res) => {
   }
 });
 
-// ── Create clip (export) synchronously ───────────────────────────────
+// ── Cut Video (export via Queue, with direct fallback) ────────────────
+app.post('/api/cut-video', async (req, res) => {
+  const { sourceUrl, streamUrl, cuts, startTime, endTime, format, watermark } = req.body;
+  if (!sourceUrl) {
+    return res.status(400).json({ error: 'Missing sourceUrl' });
+  }
+
+  const clipId = `clip_${Date.now()}`;
+
+  try {
+    await prisma.user.upsert({
+      where: { email: 'demo@example.com' },
+      update: {},
+      create: { id: 'demo-user', email: 'demo@example.com', name: 'Demo User' }
+    });
+
+    const clip = await prisma.clip.create({
+      data: { 
+        userId: 'demo-user', 
+        sourceUrl, 
+        startTime: startTime || 0, 
+        endTime: endTime || 0, 
+        format: format || 'landscape', 
+        quality: 'MVP', 
+        status: 'PENDING',
+        cuts: cuts ? cuts : undefined
+      }
+    });
+
+    const jobRecord = await prisma.job.create({
+      data: {
+        type: 'RENDER_CLIP',
+        status: 'PENDING',
+        data: { clipId: clip.id, sourceUrl, streamUrl, cuts, startTime, endTime, format, watermark }
+      }
+    });
+
+    // Try BullMQ queue first; if Redis is down, fall back to direct processing
+    let useQueue = false;
+    try {
+      await renderQueue.add('render', {
+        jobId: jobRecord.id,
+        clipId: clip.id,
+        sourceUrl, streamUrl, cuts, startTime, endTime, format, watermark
+      });
+      useQueue = true;
+    } catch (queueErr: any) {
+      console.warn('[cut] Redis/BullMQ unavailable, using direct processing:', queueErr.message);
+    }
+
+    if (useQueue) {
+      res.json({ jobId: jobRecord.id, clipId: clip.id, status: 'PROCESSING' });
+    } else {
+      // ── Direct processing fallback (no Redis needed) ──
+      await prisma.job.update({ where: { id: jobRecord.id }, data: { status: 'PROCESSING', progress: 10 } });
+
+      // Resolve input file
+      let inputFile = '';
+      if (streamUrl) {
+        const filename = path.basename(streamUrl);
+        const previewPath = path.join(DIRS.previews, filename);
+        if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) inputFile = previewPath;
+      }
+      if (!inputFile) {
+        const existing = VideoService.findExistingPreview();
+        if (existing) inputFile = existing;
+      }
+      if (!inputFile) {
+        await VideoService.downloadPreview(sourceUrl, clipId);
+        const downloaded = VideoService.findExistingPreview();
+        if (downloaded) inputFile = downloaded;
+        else throw new Error('Could not obtain source video for export');
+      }
+
+      const ext = format === 'audio' ? 'mp3' : 'mp4';
+      const outputFile = path.join(DIRS.uploads, `${clipId}.${ext}`);
+
+      const onProgress = async (percent: number) => {
+        try {
+          await prisma.job.update({ where: { id: jobRecord.id }, data: { progress: Math.round(percent) } });
+        } catch { /* ignore */ }
+      };
+
+      if (cuts && Array.isArray(cuts) && cuts.length > 0) {
+        await VideoService.processMultiClip(inputFile, outputFile, format, cuts, watermark, onProgress);
+      } else {
+        await VideoService.processClip(inputFile, outputFile, format, startTime, endTime, watermark, onProgress);
+      }
+
+      const fileUrl = `/uploads/${path.basename(outputFile)}`;
+      await prisma.clip.update({ where: { id: clip.id }, data: { status: 'COMPLETED', fileUrl } });
+      await prisma.job.update({ where: { id: jobRecord.id }, data: { status: 'COMPLETED', progress: 100, result: { fileUrl } } });
+
+      res.json({ jobId: jobRecord.id, clipId: clip.id, status: 'PROCESSING' });
+    }
+  } catch (error: any) {
+    console.error('[cut] Error:', error.message);
+    res.status(500).json({ error: 'Failed to process clip: ' + error.message });
+  }
+});
+
+// ── Create clip (Synchronous) for Viral Clips ─────────────────────────
 app.post('/api/create-clip', async (req, res) => {
   const { sourceUrl, streamUrl, startTime, endTime, format } = req.body;
   if (!sourceUrl || startTime === undefined || endTime === undefined) {
@@ -162,60 +295,40 @@ app.post('/api/create-clip', async (req, res) => {
   }
 
   const clipId = `clip_${Date.now()}`;
-
-  // Choose extension based on format
   const ext = format === 'audio' ? 'mp3' : 'mp4';
   const outputFile = path.join(DIRS.uploads, `${clipId}.${ext}`);
 
   try {
-    // Ensure demo-user exists
     await prisma.user.upsert({
       where: { email: 'demo@example.com' },
       update: {},
       create: { id: 'demo-user', email: 'demo@example.com', name: 'Demo User' }
     });
 
-    // Save to DB
     const clip = await prisma.clip.create({
       data: { userId: 'demo-user', sourceUrl, startTime, endTime, format: format || 'landscape', quality: 'MVP', status: 'PROCESSING' }
     });
 
-    // ── REUSE local preview file — NO re-downloading ──
     let inputFile = '';
 
-    // 1. Try the specific stream URL file first
     if (streamUrl) {
       const filename = path.basename(streamUrl);
       const previewPath = path.join(DIRS.previews, filename);
-      if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) {
-        inputFile = previewPath;
-        console.log(`[clip] Using stream file for ${clipId}: ${previewPath}`);
-      }
+      if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) inputFile = previewPath;
     }
 
-    // 2. Fall back to any existing preview in the previews directory
     if (!inputFile) {
       const existing = VideoService.findExistingPreview();
-      if (existing) {
-        inputFile = existing;
-        console.log(`[clip] Using existing preview for ${clipId}: ${existing}`);
-      }
+      if (existing) inputFile = existing;
     }
 
-    // 3. Last resort: download fresh (but this should rarely happen)
     if (!inputFile) {
-      console.log(`[clip] No local file found, downloading for ${clipId}...`);
-      const tempFile = path.join(DIRS.temp, `${clipId}_raw.mp4`);
       await VideoService.downloadPreview(sourceUrl, clipId);
       const downloaded = VideoService.findExistingPreview();
-      if (downloaded) {
-        inputFile = downloaded;
-      } else {
-        throw new Error('Could not obtain source video for export');
-      }
+      if (downloaded) inputFile = downloaded;
+      else throw new Error('Could not obtain source video for export');
     }
 
-    console.log(`[clip] Trimming ${startTime}s → ${endTime}s, format=${format} for ${clipId}...`);
     await VideoService.processClip(inputFile, outputFile, format, startTime, endTime);
 
     await prisma.clip.update({
@@ -227,6 +340,17 @@ app.post('/api/create-clip', async (req, res) => {
   } catch (error: any) {
     console.error('[clip] Error:', error.message);
     res.status(500).json({ error: 'Failed to create clip: ' + error.message });
+  }
+});
+
+// ── Job polling endpoint ─────────────────────────────────────────────
+app.get('/api/jobs/:id', async (req, res) => {
+  try {
+    const job = await prisma.job.findUnique({ where: { id: req.params.id } });
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+    res.json(job);
+  } catch (err: any) {
+    res.status(500).json({ error: 'Failed to fetch job' });
   }
 });
 

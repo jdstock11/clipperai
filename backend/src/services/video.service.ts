@@ -237,15 +237,17 @@ export class VideoService {
    * NO re-downloading. Uses seekInput for fast seeking + duration for precise trim.
    * Audio always preserved with AAC.
    */
-  static processClip(
+  static async processClip(
     inputPath: string,
     outputPath: string,
     format: string,
     startTime?: number,
-    endTime?: number
+    endTime?: number,
+    watermark?: any,
+    onProgress?: (percent: number) => void
   ): Promise<string> {
 
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
 
       // Validate input exists
       if (!fileExists(inputPath)) {
@@ -258,7 +260,52 @@ export class VideoService {
         fs.mkdirSync(outDir, { recursive: true });
       }
 
+      // Fetch video metadata (needed for duration calc + watermark coordinate mapping)
+      const meta = await VideoService.getVideoMetadata(inputPath);
+
+      let targetDuration = meta.duration;
+      if (startTime !== undefined && endTime !== undefined) {
+        targetDuration = Math.max(0.1, endTime - startTime);
+      }
+
+      let watermarkFilter = '';
+      if (watermark && watermark.enabled && meta.width > 0 && meta.height > 0) {
+        let x = Math.round(watermark.x * meta.width);
+        let y = Math.round(watermark.y * meta.height);
+        let w = Math.round(watermark.w * meta.width);
+        let h = Math.round(watermark.h * meta.height);
+        
+        // Ensure boundaries are strictly valid
+        x = Math.max(0, Math.min(x, meta.width - 2));
+        y = Math.max(0, Math.min(y, meta.height - 2));
+        w = Math.max(1, Math.min(w, meta.width - x - 1));
+        h = Math.max(1, Math.min(h, meta.height - y - 1));
+
+        if (w > 0 && h > 0) {
+          if (watermark.mode === 'blur') {
+            watermarkFilter = `delogo=x=${x}:y=${y}:w=${w}:h=${h}`;
+            console.log(`[clip] Applied delogo: ${watermarkFilter}`);
+          } else if (watermark.mode === 'crop') {
+            watermarkFilter = `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=black:t=fill`;
+            console.log(`[clip] Applied crop (drawbox): ${watermarkFilter}`);
+          }
+        }
+      }
+
       let cmd = ffmpeg(inputPath);
+      let lastProgressTime = Date.now();
+      let timeoutTimer: NodeJS.Timeout;
+
+      const resetTimeout = () => {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = setTimeout(() => {
+          console.error(`[clip] FFmpeg process hung for 30 seconds. Killing.`);
+          cmd.kill('SIGKILL');
+          reject(new Error('FFmpeg processing timeout (hung for 30s)'));
+        }, 30000);
+      };
+      
+      resetTimeout();
 
       // Fast input-seeking + precise duration trim
       if (startTime !== undefined && startTime > 0) {
@@ -321,9 +368,23 @@ export class VideoService {
           break;
 
         default: // landscape
-          cmd = cmd.toFormat('mp4');
+          if (watermarkFilter) {
+            cmd = cmd.videoFilter(watermarkFilter).toFormat('mp4');
+          } else {
+            cmd = cmd.toFormat('mp4');
+          }
           cmd.outputOptions([...videoOpts, ...audioOpts]);
           break;
+      }
+
+      // If format is portrait/square and we have a watermarkFilter, we need to chain them
+      if (watermarkFilter && format !== 'landscape' && format !== 'audio') {
+        // override the videoFilter set by the switch
+        if (format === 'portrait') {
+          cmd.videoFilters([watermarkFilter, 'crop=ih*(9/16):ih']);
+        } else if (format === 'square') {
+          cmd.videoFilters([watermarkFilter, 'crop=ih:ih']);
+        }
       }
 
       cmd
@@ -331,11 +392,27 @@ export class VideoService {
           console.log(`[clip] FFmpeg started: ${cmdLine.slice(0, 200)}`);
         })
         .on('progress', (p) => {
-          if (p.percent) {
-            process.stdout.write(`\r[clip] Exporting: ${p.percent.toFixed(1)}%`);
+          resetTimeout();
+          let currentPercent = p.percent;
+          
+          if (!currentPercent && p.timemark && targetDuration > 0) {
+            // Parse timemark "00:00:05.50"
+            const parts = p.timemark.split(':');
+            if (parts.length === 3) {
+              const hrs = parseFloat(parts[0]) || 0;
+              const mins = parseFloat(parts[1]) || 0;
+              const secs = parseFloat(parts[2]) || 0;
+              const elapsed = (hrs * 3600) + (mins * 60) + secs;
+              currentPercent = Math.min(99, (elapsed / targetDuration) * 100);
+            }
+          }
+          
+          if (currentPercent && onProgress) {
+            onProgress(currentPercent);
           }
         })
         .on('end', () => {
+          clearTimeout(timeoutTimer);
           console.log('\n[clip] Export complete');
           if (fileExists(outputPath)) {
             resolve(outputPath);
@@ -344,7 +421,151 @@ export class VideoService {
           }
         })
         .on('error', (err) => {
+          clearTimeout(timeoutTimer);
           console.error('\n[clip] FFmpeg error:', err.message);
+          reject(err);
+        })
+        .save(outputPath);
+    });
+  }
+
+  /**
+   * Process multi-clip: trims and concatenates multiple segments using FFmpeg filter_complex.
+   */
+  static async processMultiClip(
+    inputPath: string,
+    outputPath: string,
+    format: string,
+    cuts: Array<{ start: number; end: number }>,
+    watermark?: any,
+    onProgress?: (percent: number) => void
+  ): Promise<string> {
+    return new Promise(async (resolve, reject) => {
+      if (!fileExists(inputPath)) return reject(new Error(`Input file does not exist: ${inputPath}`));
+
+      const outDir = path.dirname(outputPath);
+      if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+      if (!cuts || cuts.length === 0) {
+        return VideoService.processClip(inputPath, outputPath, format, undefined, undefined, watermark, onProgress).then(resolve).catch(reject);
+      }
+
+      const meta = await VideoService.getVideoMetadata(inputPath);
+      let targetDuration = cuts.reduce((acc, cut) => acc + Math.max(0, cut.end - cut.start), 0);
+      if (targetDuration <= 0) targetDuration = meta.duration;
+
+      let watermarkFilter = '';
+      if (watermark && watermark.enabled && meta.width > 0 && meta.height > 0) {
+        let x = Math.round(watermark.x * meta.width);
+        let y = Math.round(watermark.y * meta.height);
+        let w = Math.round(watermark.w * meta.width);
+        let h = Math.round(watermark.h * meta.height);
+        
+        // Strictly constrain values
+        x = Math.max(0, Math.min(x, meta.width - 2));
+        y = Math.max(0, Math.min(y, meta.height - 2));
+        w = Math.max(1, Math.min(w, meta.width - x - 1));
+        h = Math.max(1, Math.min(h, meta.height - y - 1));
+
+        if (w > 0 && h > 0) {
+          if (watermark.mode === 'blur') {
+            watermarkFilter = `delogo=x=${x}:y=${y}:w=${w}:h=${h}`;
+          } else if (watermark.mode === 'crop') {
+            watermarkFilter = `drawbox=x=${x}:y=${y}:w=${w}:h=${h}:color=black:t=fill`;
+          }
+        }
+      }
+
+      let cmd = ffmpeg(inputPath);
+      let timeoutTimer: NodeJS.Timeout;
+
+      const resetTimeout = () => {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = setTimeout(() => {
+          console.error(`[clip-multi] FFmpeg process hung for 30 seconds. Killing.`);
+          cmd.kill('SIGKILL');
+          reject(new Error('FFmpeg processing timeout (hung for 30s)'));
+        }, 30000);
+      };
+      
+      resetTimeout();
+      let filterComplex = '';
+      const concatInputs: string[] = [];
+
+      cuts.forEach((cut, i) => {
+        const vOut = `v${i}`;
+        const aOut = `a${i}`;
+        filterComplex += `[0:v]trim=start=${cut.start}:end=${cut.end},setpts=PTS-STARTPTS[${vOut}];`;
+        filterComplex += `[0:a]atrim=start=${cut.start}:end=${cut.end},asetpts=PTS-STARTPTS[${aOut}];`;
+        concatInputs.push(`[${vOut}][${aOut}]`);
+      });
+
+      filterComplex += `${concatInputs.join('')}concat=n=${cuts.length}:v=1:a=1[concatv][concata];`;
+
+      let finalV = 'concatv';
+      
+      // Apply watermark removal to the concatenated video
+      if (watermarkFilter) {
+        filterComplex += `[${finalV}]${watermarkFilter}[cleanv];`;
+        finalV = 'cleanv';
+      }
+
+      if (format === 'portrait') {
+        filterComplex += `[${finalV}]crop=ih*(9/16):ih[outv]`;
+        finalV = 'outv';
+      } else if (format === 'square') {
+        filterComplex += `[${finalV}]crop=ih:ih[outv]`;
+        finalV = 'outv';
+      }
+
+      cmd = cmd.complexFilter(filterComplex, format === 'audio' ? ['concata'] : [finalV, 'concata']);
+
+      const audioOpts = ['-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '44100'];
+      const videoOpts = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-movflags', '+faststart', '-pix_fmt', 'yuv420p', '-threads', '1'];
+
+      if (format === 'audio') {
+        cmd = cmd.toFormat('mp3');
+        cmd.outputOptions(['-c:a', 'libmp3lame', '-b:a', '192k', '-ac', '2', '-ar', '44100', '-threads', '1']);
+      } else if (format === 'portrait') {
+        cmd = cmd.size('1080x1920').toFormat('mp4');
+        cmd.outputOptions([...videoOpts, ...audioOpts]);
+      } else if (format === 'square') {
+        cmd = cmd.size('1080x1080').toFormat('mp4');
+        cmd.outputOptions([...videoOpts, ...audioOpts]);
+      } else {
+        cmd = cmd.toFormat('mp4');
+        cmd.outputOptions([...videoOpts, ...audioOpts]);
+      }
+
+      cmd
+        .on('start', (cmdLine) => console.log(`[clip-multi] FFmpeg started: ${cmdLine.slice(0, 200)}`))
+        .on('progress', (p) => { 
+          resetTimeout();
+          let currentPercent = p.percent;
+          
+          if (!currentPercent && p.timemark && targetDuration > 0) {
+            const parts = p.timemark.split(':');
+            if (parts.length === 3) {
+              const hrs = parseFloat(parts[0]) || 0;
+              const mins = parseFloat(parts[1]) || 0;
+              const secs = parseFloat(parts[2]) || 0;
+              const elapsed = (hrs * 3600) + (mins * 60) + secs;
+              currentPercent = Math.min(99, (elapsed / targetDuration) * 100);
+            }
+          }
+          
+          if (currentPercent && onProgress) {
+            onProgress(currentPercent);
+          }
+        })
+        .on('end', () => {
+          clearTimeout(timeoutTimer);
+          console.log('\n[clip-multi] Export complete');
+          fileExists(outputPath) ? resolve(outputPath) : reject(new Error('Output file missing after FFmpeg export'));
+        })
+        .on('error', (err) => {
+          clearTimeout(timeoutTimer);
+          console.error('\n[clip-multi] FFmpeg error:', err.message);
           reject(err);
         })
         .save(outputPath);

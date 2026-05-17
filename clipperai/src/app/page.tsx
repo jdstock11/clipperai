@@ -18,28 +18,29 @@ const features = [
 
 export default function Home() {
   const [url, setUrl] = useState("");
+  const [cutUrl, setCutUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [mounted, setMounted] = useState(false);
   const router = useRouter();
 
   useEffect(() => { setMounted(true); }, []);
 
-  const handleFetchVideo = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!url) return;
+  const handleFetchVideo = async (targetUrl: string, destination: string) => {
+    if (!targetUrl) return;
     setIsLoading(true);
 
     try {
       const res = await fetch("/api/fetch-video", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ url: targetUrl }),
       });
       const data = await res.json();
 
       if (data.title) {
         sessionStorage.setItem("videoData", JSON.stringify(data));
-        router.push("/editor");
+        router.push(destination);
       } else if (data.error) {
         alert("Failed to fetch video: " + data.error);
       } else {
@@ -50,6 +51,40 @@ export default function Home() {
       alert("An unexpected error occurred: " + error.message);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleUploadVideo = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append('video', file);
+
+    try {
+      const res = await fetch('/api/upload-video', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      
+      if (data.url) {
+        sessionStorage.setItem("videoData", JSON.stringify({
+          title: file.name,
+          url: data.url, 
+          streamUrl: data.streamUrl,
+          duration: data.duration || 0,
+          isLocalUpload: true
+        }));
+        router.push("/cut-studio");
+      } else {
+        alert("Upload failed: " + data.error);
+      }
+    } catch (err: any) {
+      alert("Error uploading file: " + err.message);
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -108,39 +143,98 @@ export default function Home() {
           YouTube Shorts, TikTok, Facebook and X.
         </p>
 
-        {/* URL Input Form */}
-        <form onSubmit={handleFetchVideo} className="w-full max-w-3xl relative group mb-20">
-          {/* Glow ring behind input */}
-          <div className="absolute -inset-[2px] bg-gradient-to-r from-[var(--primary)] via-[var(--accent)] to-[#06b6d4] rounded-2xl blur-sm opacity-20 group-hover:opacity-40 transition-opacity duration-500" />
+        {/* Selection Cards */}
+        <div className="w-full max-w-4xl grid grid-cols-1 md:grid-cols-2 gap-6 mb-20 relative z-10">
+          
+          {/* Card 1: AI Viral Clips */}
+          <div className="glass-strong rounded-2xl p-6 border border-[var(--border)] hover:border-[var(--primary)] transition-all flex flex-col items-center text-center group">
+            <div className="w-14 h-14 rounded-full bg-[var(--primary)]/10 text-[var(--primary)] flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-[0_0_20px_var(--primary-dim)]">
+              <Wand2 className="w-7 h-7" />
+            </div>
+            <h2 className="text-2xl font-bold mb-2">Generate Viral Clips</h2>
+            <p className="text-[var(--muted)] text-sm mb-6 flex-1">
+              AI-powered engine automatically finds viral moments, resizes, and adds captions.
+            </p>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              handleFetchVideo(url, "/viral-clips");
+            }} className="w-full relative">
+              <div className="relative flex items-center bg-black/40 border border-[var(--border)] rounded-xl p-1 gap-1 focus-within:border-[var(--primary)] transition-colors">
+                <Search className="absolute left-3 w-4 h-4 text-[var(--muted)]" />
+                <input
+                  type="url"
+                  required
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="Paste YouTube or Reel URL..."
+                  className="w-full bg-transparent outline-none pl-10 pr-3 py-3 text-sm text-white placeholder-[var(--muted)]"
+                />
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="btn-glow px-4 py-3 rounded-lg text-sm font-bold flex items-center justify-center min-w-[100px] disabled:opacity-50"
+                >
+                  {isLoading ? <span className="animate-spin w-4 h-4 border-2 border-[var(--background)] border-t-transparent rounded-full" /> : "Start"}
+                </button>
+              </div>
+            </form>
+          </div>
 
-          <div className="relative flex flex-col sm:flex-row items-center glass-strong rounded-2xl p-2 gap-2">
-            <div className="flex-1 flex items-center w-full relative">
-              <Search className="absolute left-4 w-5 h-5 text-[var(--muted)]" />
-              <input
-                type="url"
-                required
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="Paste any YouTube URL..."
-                className="w-full bg-transparent outline-none pl-12 pr-4 py-4 text-lg text-white placeholder-[var(--muted)] font-medium"
+          {/* Card 2: Cut & Remove Studio */}
+          <div className="glass-strong rounded-2xl p-6 border border-[var(--border)] hover:border-[var(--accent)] transition-all flex flex-col items-center text-center group relative overflow-hidden">
+            <div className="absolute top-0 right-0 bg-[var(--accent)] text-white text-[10px] font-bold px-3 py-1 rounded-bl-xl tracking-widest uppercase shadow-md">New</div>
+            <div className="w-14 h-14 rounded-full bg-[var(--accent)]/10 text-[var(--accent)] flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-[0_0_20px_var(--accent-dim)]">
+              <Scissors className="w-7 h-7" />
+            </div>
+            <h2 className="text-2xl font-bold mb-2">Cut & Remove Studio</h2>
+            <p className="text-[var(--muted)] text-sm mb-6 flex-1">
+              Professional standalone timeline editor to slice out unwanted sections and trim precisely.
+            </p>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              handleFetchVideo(cutUrl, "/cut-studio");
+            }} className="w-full relative">
+              <div className="relative flex items-center bg-black/40 border border-[var(--border)] rounded-xl p-1 gap-1 focus-within:border-[var(--accent)] transition-colors">
+                <input
+                  type="url"
+                  required
+                  value={cutUrl}
+                  onChange={(e) => setCutUrl(e.target.value)}
+                  placeholder="Paste URL or upload..."
+                  className="w-full bg-transparent outline-none pl-4 pr-3 py-3 text-sm text-white placeholder-[var(--muted)]"
+                />
+                <button
+                  type="submit"
+                  disabled={isLoading}
+                  className="bg-gradient-to-r from-[var(--accent)] to-purple-500 hover:opacity-90 px-4 py-3 rounded-lg text-sm font-bold flex items-center justify-center min-w-[100px] text-white disabled:opacity-50 transition-opacity"
+                >
+                  {isLoading ? <span className="animate-spin w-4 h-4 border-2 border-[var(--background)] border-t-transparent rounded-full" /> : "Open"}
+                </button>
+              </div>
+            </form>
+            <div className="w-full mt-3">
+              <button 
+                onClick={() => document.getElementById('videoUpload')?.click()}
+                disabled={isUploading}
+                className="w-full py-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-xs text-[var(--muted)] hover:text-white hover:border-[var(--accent)] transition-all flex items-center justify-center gap-2"
+              >
+                {isUploading ? (
+                  <><span className="animate-spin w-3 h-3 border border-[var(--muted)] border-t-transparent rounded-full" /> Uploading...</>
+                ) : (
+                  <>Or Upload Personal Video</>
+                )}
+              </button>
+              <input 
+                type="file" 
+                id="videoUpload" 
+                accept="video/*" 
+                className="hidden" 
+                onChange={handleUploadVideo} 
               />
             </div>
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full sm:w-auto btn-glow px-8 py-4 rounded-xl font-bold flex items-center justify-center gap-2.5 min-w-[180px] text-base disabled:opacity-50"
-            >
-              {isLoading ? (
-                <span className="animate-spin w-5 h-5 border-2 border-[var(--background)] border-t-transparent rounded-full" />
-              ) : (
-                <>
-                  <Wand2 className="w-5 h-5" />
-                  <span>Generate Clips</span>
-                </>
-              )}
-            </button>
           </div>
-        </form>
+
+        </div>
 
         {/* Platform badges */}
         <div className="flex flex-wrap items-center justify-center gap-3 mb-10">

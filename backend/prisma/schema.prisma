@@ -57,6 +57,7 @@ model Clip {
   endTime   Float
   format    String
   quality   String
+  cuts      Json?
   status    Status   @default(PENDING)
   fileUrl   String?
   createdAt DateTime @default(now())
@@ -64,6 +65,20 @@ model Clip {
 
   @@index([userId])
   @@map("clips")
+}
+
+model Job {
+  id        String   @id @default(cuid())
+  type      String
+  status    Status   @default(PENDING)
+  progress  Int      @default(0)
+  data      Json?
+  result    Json?
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("jobs")
 }
 
 enum Status {
