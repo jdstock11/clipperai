@@ -1,0 +1,6 @@
+{
+  "framework": "nextjs",
+  "installCommand": "npm install && npm install --prefix clipperai",
+  "buildCommand": "cd clipperai && npm run build",
+  "outputDirectory": "clipperai/.next"
+}
