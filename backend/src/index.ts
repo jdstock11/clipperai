@@ -11,6 +11,7 @@ import { renderQueue } from './queue/renderQueue';
 import multer from 'multer';
 import './workers/renderWorker';
 import { executeYtDlpWithRetry, ensureYtDlpExists, getYtDlpWrap } from './utils/yt-dlp-helper';
+import authRoutes from './routes/auth.routes';
 
 // Simple in-memory cache for metadata
 const metadataCache = new Map<string, { data: any, timestamp: number }>();
@@ -47,6 +48,9 @@ const PORT = process.env.PORT || 4000;
 // =====================================================================
 
 const upload = multer({ dest: DIRS.temp, limits: { fileSize: 500 * 1024 * 1024 } });
+
+// ── Auth Routes ──────────────────────────────────────────────────────
+app.use('/api/auth', authRoutes);
 
 // ── Upload video (Local File) ────────────────────────────────────────
 app.post('/api/upload-video', upload.single('video'), async (req, res) => {
@@ -137,11 +141,19 @@ app.post('/api/prepare-preview', async (req, res) => {
   const { url, duration } = req.body;
   if (!url) return res.status(400).json({ error: 'URL is required' });
 
+  let localFile = '';
+  if (url.startsWith('local://')) {
+    localFile = url.replace('local://', '');
+  }
+
   // Delete old previews before generating new ones to prevent cache issues
   try {
     fs.readdirSync(DIRS.previews).forEach(f => {
       const fp = path.join(DIRS.previews, f);
-      try { fs.unlinkSync(fp); } catch { /* ignore */ }
+      // DO NOT delete the local file we just uploaded!
+      if (fp !== localFile) {
+        try { fs.unlinkSync(fp); } catch { /* ignore */ }
+      }
     });
   } catch { /* ignore */ }
 
@@ -149,13 +161,23 @@ app.post('/api/prepare-preview', async (req, res) => {
   console.log(`[preview] Generating preview synchronously: ${previewId}`);
 
   try {
-    const rawPath = await VideoService.downloadPreview(url, previewId);
-    let finalPath = rawPath;
+    let finalPath = '';
 
-    try {
-      finalPath = await VideoService.encodePreview(rawPath, previewId);
-    } catch {
-      console.warn('[preview] Encode failed, using raw download');
+    if (localFile) {
+      if (!fs.existsSync(localFile)) {
+        throw new Error(`Local file not found: ${localFile}`);
+      }
+      console.log(`[preview] Processing local file: ${localFile}`);
+      finalPath = await VideoService.encodeLocalPreview(localFile, previewId);
+    } else {
+      const rawPath = await VideoService.downloadPreview(url, previewId);
+      finalPath = rawPath;
+
+      try {
+        finalPath = await VideoService.encodePreview(rawPath, previewId);
+      } catch {
+        console.warn('[preview] Encode failed, using raw download');
+      }
     }
 
     if (!fs.existsSync(finalPath) || fs.statSync(finalPath).size === 0) {
@@ -175,7 +197,7 @@ app.post('/api/prepare-preview', async (req, res) => {
     });
   } catch (err: any) {
     console.error(`[preview] Failed: ${previewId} —`, err.message);
-    res.status(500).json({ error: 'Preview generation failed' });
+    res.status(500).json({ error: 'Preview generation failed: ' + err.message });
   }
 });
 
@@ -242,7 +264,7 @@ app.post('/api/cut-video', async (req, res) => {
         format: format || 'landscape',
         quality: 'MVP',
         status: 'PENDING',
-        cuts: cuts ? cuts : undefined
+        cuts: cuts ? JSON.stringify(cuts) : undefined
       }
     });
 
@@ -250,7 +272,7 @@ app.post('/api/cut-video', async (req, res) => {
       data: {
         type: 'RENDER_CLIP',
         status: 'PENDING',
-        data: { clipId: clip.id, sourceUrl, streamUrl, cuts, startTime, endTime, format, watermark }
+        data: JSON.stringify({ clipId: clip.id, sourceUrl, streamUrl, cuts, startTime, endTime, format, watermark })
       }
     });
 
@@ -308,7 +330,7 @@ app.post('/api/cut-video', async (req, res) => {
 
       const fileUrl = `/uploads/${path.basename(outputFile)}`;
       await prisma.clip.update({ where: { id: clip.id }, data: { status: 'COMPLETED', fileUrl } });
-      await prisma.job.update({ where: { id: jobRecord.id }, data: { status: 'COMPLETED', progress: 100, result: { fileUrl } } });
+      await prisma.job.update({ where: { id: jobRecord.id }, data: { status: 'COMPLETED', progress: 100, result: JSON.stringify({ fileUrl }) } });
 
       res.json({ jobId: jobRecord.id, clipId: clip.id, status: 'PROCESSING' });
     }
@@ -318,9 +340,89 @@ app.post('/api/cut-video', async (req, res) => {
   }
 });
 
+// ── Merge Videos ────────────────────────────────────────────────────────
+app.post('/api/merge-video', async (req, res) => {
+  const { urls, format, textLayers } = req.body;
+  if (!urls || !Array.isArray(urls) || urls.length < 2) {
+    return res.status(400).json({ error: 'At least two video URLs are required for merging' });
+  }
+
+  const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  const clipId = `merge_${Date.now()}`;
+
+  try {
+    const jobRecord = await prisma.job.create({
+      data: {
+        id: jobId,
+        type: 'MERGE_VIDEOS',
+        status: 'PROCESSING',
+        progress: 10,
+        data: JSON.stringify({ urls, format })
+      }
+    });
+
+    res.json({ jobId: jobRecord.id, status: 'PROCESSING' });
+
+    // Process asynchronously (direct fallback approach)
+    (async () => {
+      try {
+        const inputPaths: string[] = [];
+        
+        for (const url of urls) {
+          if (url.startsWith('/api/stream/')) {
+            const filename = path.basename(url);
+            let fp = path.join(DIRS.previews, filename);
+            if (!fs.existsSync(fp)) fp = path.join(DIRS.uploads, filename);
+            if (fs.existsSync(fp) && fs.statSync(fp).size > 0) {
+              inputPaths.push(fp);
+            } else {
+              throw new Error(`File not found for stream: ${filename}`);
+            }
+          } else if (url.startsWith('local://')) {
+            const fp = url.replace('local://', '');
+            if (fs.existsSync(fp)) inputPaths.push(fp);
+            else throw new Error(`Local file not found: ${fp}`);
+          } else {
+            // Unhandled external url
+            throw new Error(`Unsupported URL type in merge: ${url}`);
+          }
+        }
+
+        const ext = 'mp4';
+        const outputFile = path.join(DIRS.uploads, `${clipId}.${ext}`);
+
+        const onProgress = async (percent: number) => {
+          try {
+            await prisma.job.update({ where: { id: jobRecord.id }, data: { progress: Math.round(percent) } });
+          } catch { /* ignore */ }
+        };
+
+        await VideoService.mergeVideos(inputPaths, outputFile, format || 'landscape', onProgress, textLayers);
+
+        const fileUrl = `/uploads/${path.basename(outputFile)}`;
+        await prisma.job.update({ 
+          where: { id: jobRecord.id }, 
+          data: { status: 'COMPLETED', progress: 100, result: JSON.stringify({ fileUrl }) } 
+        });
+
+      } catch (err: any) {
+        console.error('[merge] Async error:', err.message);
+        await prisma.job.update({ 
+          where: { id: jobRecord.id }, 
+          data: { status: 'FAILED', error: err.message } 
+        }).catch(() => {});
+      }
+    })();
+
+  } catch (error: any) {
+    console.error('[merge] Route error:', error.message);
+    res.status(500).json({ error: 'Failed to initiate merge: ' + error.message });
+  }
+});
+
 // ── Create clip (Synchronous) for Viral Clips ─────────────────────────
 app.post('/api/create-clip', async (req, res) => {
-  const { sourceUrl, streamUrl, startTime, endTime, format } = req.body;
+  const { sourceUrl, streamUrl, startTime, endTime, format, textLayers } = req.body;
   if (!sourceUrl || startTime === undefined || endTime === undefined) {
     return res.status(400).json({ error: 'Missing parameters' });
   }
@@ -360,7 +462,7 @@ app.post('/api/create-clip', async (req, res) => {
       else throw new Error('Could not obtain source video for export');
     }
 
-    await VideoService.processClip(inputFile, outputFile, format, startTime, endTime);
+    await VideoService.processClip(inputFile, outputFile, format, startTime, endTime, undefined, undefined, textLayers);
 
     await prisma.clip.update({
       where: { id: clip.id },
@@ -379,7 +481,16 @@ app.get('/api/jobs/:id', async (req, res) => {
   try {
     const job = await prisma.job.findUnique({ where: { id: req.params.id } });
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    res.json(job);
+    
+    let parsedResult = null;
+    if (job.result) {
+      try { parsedResult = JSON.parse(job.result); } catch (e) { parsedResult = job.result; }
+    }
+    
+    res.json({
+      ...job,
+      result: parsedResult
+    });
   } catch (err: any) {
     res.status(500).json({ error: 'Failed to fetch job' });
   }

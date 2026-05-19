@@ -1,0 +1,340 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   Text Overlay System — Animations & Editor Styles
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* ── Text Animation Keyframes ──────────────────────────────────────── */
+
+@keyframes text-fade-in {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+@keyframes text-fade-out {
+  0%   { opacity: 1; }
+  70%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes text-zoom {
+  0%   { transform: scale(0) rotate(var(--layer-rotation, 0deg)); opacity: 0; }
+  60%  { transform: scale(1.1) rotate(var(--layer-rotation, 0deg)); opacity: 1; }
+  100% { transform: scale(1) rotate(var(--layer-rotation, 0deg)); opacity: 1; }
+}
+
+@keyframes text-slide-up {
+  0%   { transform: translateY(60px) rotate(var(--layer-rotation, 0deg)); opacity: 0; }
+  100% { transform: translateY(0) rotate(var(--layer-rotation, 0deg)); opacity: 1; }
+}
+
+@keyframes text-bounce {
+  0%   { transform: scale(0) rotate(var(--layer-rotation, 0deg)); opacity: 0; }
+  40%  { transform: scale(1.15) rotate(var(--layer-rotation, 0deg)); opacity: 1; }
+  60%  { transform: scale(0.9) rotate(var(--layer-rotation, 0deg)); }
+  80%  { transform: scale(1.04) rotate(var(--layer-rotation, 0deg)); }
+  100% { transform: scale(1) rotate(var(--layer-rotation, 0deg)); opacity: 1; }
+}
+
+/* Animation classes */
+.text-anim-fadeIn   { animation: text-fade-in 0.6s ease-out forwards; }
+.text-anim-fadeOut  { animation: text-fade-out 2s ease-in forwards; }
+.text-anim-zoom     { animation: text-zoom 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
+.text-anim-slideUp  { animation: text-slide-up 0.5s ease-out forwards; }
+.text-anim-bounce   { animation: text-bounce 0.7s ease-out forwards; }
+
+/* ── Text Layer on Canvas ──────────────────────────────────────────── */
+
+.text-overlay-layer {
+  position: absolute;
+  cursor: grab;
+  user-select: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-width: 90%;
+  pointer-events: auto;
+  transform-origin: center center;
+  transition: box-shadow 0.15s ease;
+}
+
+.text-overlay-layer:active {
+  cursor: grabbing;
+}
+
+.text-overlay-layer.is-active {
+  outline: 2px dashed rgba(0, 229, 191, 0.6);
+  outline-offset: 6px;
+}
+
+.text-overlay-layer.is-active::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border: 1px solid rgba(0, 229, 191, 0.15);
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+/* ── Canvas Container ──────────────────────────────────────────────── */
+
+.text-overlay-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* ── Editor Panel Styles ───────────────────────────────────────────── */
+
+.text-editor-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.text-editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.text-editor-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.text-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.text-editor-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.text-editor-input:focus {
+  border-color: var(--primary);
+}
+
+.text-editor-textarea {
+  width: 100%;
+  min-height: 64px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+
+.text-editor-textarea:focus {
+  border-color: var(--primary);
+}
+
+.text-editor-select {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%237d8590' viewBox='0 0 24 24'%3E%3Cpath d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 28px;
+}
+
+.text-editor-select:focus {
+  border-color: var(--primary);
+}
+
+.text-editor-color-swatch {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 2px solid var(--border);
+  cursor: pointer;
+  overflow: hidden;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.text-editor-color-swatch input[type="color"] {
+  position: absolute;
+  inset: -4px;
+  width: calc(100% + 8px);
+  height: calc(100% + 8px);
+  border: none;
+  cursor: pointer;
+  background: none;
+}
+
+.text-editor-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.text-editor-toggle:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.text-editor-toggle.is-active {
+  background: var(--primary-dim);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.text-editor-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: var(--surface-2);
+  border-radius: 4px;
+  outline: none;
+}
+
+.text-editor-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--primary);
+  cursor: pointer;
+  box-shadow: 0 0 8px rgba(0, 229, 191, 0.3);
+}
+
+/* ── Layers Panel ──────────────────────────────────────────────────── */
+
+.text-layer-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-size: 12px;
+}
+
+.text-layer-item:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.text-layer-item.is-active {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.text-layer-item .layer-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.text-layer-item .layer-actions {
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.text-layer-item:hover .layer-actions {
+  opacity: 1;
+}
+
+.text-layer-item .layer-action-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.text-layer-item .layer-action-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: white;
+}
+
+.text-layer-item .layer-action-btn.delete:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+/* ── Collapsible Section ───────────────────────────────────────────── */
+
+.text-editor-collapse-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.text-editor-collapse-header:hover .text-editor-label {
+  color: var(--foreground);
+}
+
+/* ── Time Input ────────────────────────────────────────────────────── */
+
+.text-time-input {
+  width: 72px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--foreground);
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  outline: none;
+  text-align: center;
+}
+
+.text-time-input:focus {
+  border-color: var(--primary);
+}

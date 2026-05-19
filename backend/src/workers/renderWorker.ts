@@ -92,7 +92,7 @@ setTimeout(() => {
 
       await prisma.job.update({
         where: { id: jobId },
-        data: { status: 'COMPLETED', progress: 100, result: { fileUrl } }
+        data: { status: 'COMPLETED', progress: 100, result: JSON.stringify({ fileUrl }) }
       });
 
       return { fileUrl };

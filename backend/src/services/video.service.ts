@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import YTDlpWrap from 'yt-dlp-wrap';
-import ffprobeStatic from 'ffprobe-static';
+const ffprobeStatic = require('ffprobe-static');
 import { executeYtDlpWithRetry } from '../utils/yt-dlp-helper';
 
 const isWin = process.platform === 'win32';
@@ -59,7 +59,130 @@ function findDownloadedFile(dir: string, prefix: string): string | null {
 }
 
 // ── Service ──────────────────────────────────────────────────────────
+
+// ── Text overlay types (matches frontend TextLayer) ──────────────────
+interface TextLayerInput {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  fontSize: number;
+  fontFamily: string;
+  color: string;
+  backgroundColor: string;
+  backgroundOpacity: number;
+  opacity: number;
+  rotation: number;
+  bold: boolean;
+  italic: boolean;
+  uppercase: boolean;
+  textAlign: string;
+  lineSpacing: number;
+  letterSpacing: number;
+  shadow: { enabled: boolean; color: string; blur: number; x: number; y: number };
+  stroke: { enabled: boolean; color: string; width: number };
+  animation: string;
+  startTime: number;
+  endTime: number;
+  visible: boolean;
+  clipId?: string;
+}
+
 export class VideoService {
+
+  /**
+   * Convert frontend TextLayer objects into FFmpeg drawtext filter strings.
+   * Each layer becomes a separate drawtext filter chained in the filter graph.
+   */
+  static buildDrawtextFilters(
+    textLayers: TextLayerInput[],
+    videoWidth: number,
+    videoHeight: number,
+    videoDuration: number,
+    timeOffset: number = 0
+  ): string[] {
+    if (!textLayers || textLayers.length === 0 || videoWidth <= 0 || videoHeight <= 0) return [];
+
+    // Map font families to system fallbacks
+    const fontMap: Record<string, string> = {
+      'Montserrat': 'Sans',
+      'Poppins': 'Sans',
+      'Bebas Neue': 'Sans',
+      'Anton': 'Sans',
+      'Oswald': 'Sans',
+      'Roboto': 'Sans',
+      'Playfair Display': 'Serif',
+    };
+
+    return textLayers
+      .filter(l => l.visible && l.text && l.text.trim().length > 0)
+      .map(layer => {
+        const text = (layer.uppercase ? layer.text.toUpperCase() : layer.text)
+          .replace(/'/g, "'\\\''")
+          .replace(/:/g, '\\:')
+          .replace(/%/g, '%%')
+          .replace(/\\/g, '\\\\');
+
+        // Position: convert percentage to absolute, centering the text
+        const x = Math.round(layer.x * videoWidth);
+        const y = Math.round(layer.y * videoHeight);
+
+        // Font
+        const font = fontMap[layer.fontFamily] || 'Sans';
+        const fontSize = Math.max(8, Math.round(layer.fontSize * (videoHeight / 720)));
+
+        // Color: hex to FFmpeg format
+        const fontcolor = layer.color.replace('#', '0x');
+
+        // Time-based enable
+        const endTime = layer.endTime === 0 ? videoDuration : layer.endTime;
+        const st = Math.max(0, layer.startTime - timeOffset);
+        const et = Math.max(st, endTime - timeOffset);
+        const enable = `enable='between(t,${st.toFixed(2)},${et.toFixed(2)})'`;
+
+        // Build filter parts
+        const parts: string[] = [
+          `drawtext=text='${text}'`,
+          `x=${x}-(text_w/2)`,
+          `y=${y}-(text_h/2)`,
+          `fontsize=${fontSize}`,
+          `font=${font}`,
+          `fontcolor=${fontcolor}@${layer.opacity.toFixed(2)}`,
+          enable,
+        ];
+
+        // Bold/italic (fontfile not available, use font style hint)
+        // Note: FFmpeg drawtext 'font' doesn't support weight directly without fontfile.
+        // We approximate with available system fonts.
+
+        // Background box
+        if (layer.backgroundOpacity > 0) {
+          const bgColor = layer.backgroundColor.replace('#', '0x');
+          parts.push(`box=1`);
+          parts.push(`boxcolor=${bgColor}@${layer.backgroundOpacity.toFixed(2)}`);
+          parts.push(`boxborderw=6`);
+        }
+
+        // Shadow
+        if (layer.shadow && layer.shadow.enabled) {
+          const shadowColor = layer.shadow.color.replace('#', '0x');
+          parts.push(`shadowcolor=${shadowColor}@0.7`);
+          parts.push(`shadowx=${layer.shadow.x}`);
+          parts.push(`shadowy=${layer.shadow.y}`);
+        }
+
+        // Stroke / border
+        if (layer.stroke && layer.stroke.enabled) {
+          const borderColor = layer.stroke.color.replace('#', '0x');
+          parts.push(`borderw=${Math.round(layer.stroke.width)}`);
+          parts.push(`bordercolor=${borderColor}`);
+        }
+
+        const filter = parts.join(':');
+        console.log(`[text-overlay] Generated drawtext: ${filter.slice(0, 120)}...`);
+        return filter;
+      });
+  }
 
   /**
    * Download FULL video from YouTube at up to 720p with audio.
@@ -146,6 +269,40 @@ export class VideoService {
         .save(outputPath);
     });
   }
+
+  static async encodeLocalPreview(inputPath: string, previewId: string): Promise<string> {
+    const outputPath = path.join(DIRS.previews, `${previewId}_encoded.mp4`);
+
+    console.log(`[preview] Encoding local HD preview → ${outputPath}`);
+
+    return new Promise<string>((resolve, reject) => {
+      ffmpeg(inputPath)
+        .videoCodec('libx264')
+        .audioCodec('aac')
+        .outputOptions([
+          '-vf scale=1280:-2',
+          '-preset ultrafast',
+          '-crf 22',
+          '-movflags +faststart',
+          '-b:a 192k'
+        ])
+        .toFormat('mp4')
+        .on('end', () => {
+          if (fileExists(outputPath)) {
+            console.log('[preview] Local HD preview generated');
+            resolve(outputPath);
+          } else {
+            reject(new Error('Encoded local preview missing'));
+          }
+        })
+        .on('error', (err) => {
+          console.error('[preview] FFmpeg encode error:', err.message);
+          reject(err);
+        })
+        .save(outputPath);
+    });
+  }
+
 
   /** Get video metadata via ffprobe — returns REAL duration, dimensions, codecs */
   static async getVideoMetadata(inputPath: string): Promise<{
@@ -235,7 +392,8 @@ export class VideoService {
     startTime?: number,
     endTime?: number,
     watermark?: any,
-    onProgress?: (percent: number) => void
+    onProgress?: (percent: number) => void,
+    textLayers?: TextLayerInput[]
   ): Promise<string> {
 
     return new Promise(async (resolve, reject) => {
@@ -375,6 +533,20 @@ export class VideoService {
           cmd.videoFilters([watermarkFilter, 'crop=ih*(9/16):ih']);
         } else if (format === 'square') {
           cmd.videoFilters([watermarkFilter, 'crop=ih:ih']);
+        }
+      }
+
+      // Apply text overlay drawtext filters (appended after all other video filters)
+      if (textLayers && textLayers.length > 0 && format !== 'audio') {
+        const clipStart = startTime || 0;
+        const drawtextFilters = VideoService.buildDrawtextFilters(
+          textLayers, meta.width || 1280, meta.height || 720, targetDuration, clipStart
+        );
+        if (drawtextFilters.length > 0) {
+          drawtextFilters.forEach(f => {
+            cmd = cmd.videoFilter(f);
+          });
+          console.log(`[clip] Applied ${drawtextFilters.length} text overlay(s)`);
         }
       }
 
@@ -557,6 +729,144 @@ export class VideoService {
         .on('error', (err) => {
           clearTimeout(timeoutTimer);
           console.error('\n[clip-multi] FFmpeg error:', err.message);
+          reject(err);
+        })
+        .save(outputPath);
+    });
+  }
+
+  /**
+   * Process merge: concat multiple full video files into one using filter_complex
+   */
+  static async mergeVideos(
+    inputPaths: string[],
+    outputPath: string,
+    format: string,
+    onProgress?: (percent: number) => void,
+    textLayers?: TextLayerInput[]
+  ): Promise<string> {
+    return new Promise(async (resolve, reject) => {
+      if (inputPaths.length === 0) return reject(new Error('No input videos provided for merging.'));
+
+      for (const input of inputPaths) {
+        if (!fileExists(input)) return reject(new Error(`Input file does not exist: ${input}`));
+      }
+
+      const outDir = path.dirname(outputPath);
+      if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+      // Determine dimensions based on format
+      let w = 1920; let h = 1080; // landscape
+      if (format === 'portrait') { w = 1080; h = 1920; }
+      else if (format === 'square') { w = 1080; h = 1080; }
+      else if (format === 'audio') { w = 0; h = 0; }
+
+      let filterComplex = '';
+      const concatInputs: string[] = [];
+      let totalDuration = 0;
+
+      for (let i = 0; i < inputPaths.length; i++) {
+        const meta = await VideoService.getVideoMetadata(inputPaths[i]);
+        totalDuration += meta.duration > 0 ? meta.duration : 5; // fallback
+        
+        const vOut = `v${i}`;
+        const aOut = `a${i}`;
+        
+        if (format !== 'audio') {
+          // Video: scale and pad to WxH, normalize framerate to 30fps and sar to 1
+          filterComplex += `[${i}:v]scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[${vOut}];`;
+        }
+        
+        // Audio: resample to 44100Hz, stereo
+        filterComplex += `[${i}:a]aresample=44100,aformat=channel_layouts=stereo[${aOut}];`;
+        
+        if (format === 'audio') {
+          concatInputs.push(`[${aOut}]`);
+        } else {
+          concatInputs.push(`[${vOut}][${aOut}]`);
+        }
+      }
+
+      if (format === 'audio') {
+        filterComplex += `${concatInputs.join('')}concat=n=${inputPaths.length}:v=0:a=1[outa]`;
+      } else {
+        filterComplex += `${concatInputs.join('')}concat=n=${inputPaths.length}:v=1:a=1[outv][outa]`;
+      }
+
+      let cmd = ffmpeg();
+      inputPaths.forEach(input => { cmd = cmd.addInput(input); });
+
+      let timeoutTimer: NodeJS.Timeout;
+      const resetTimeout = () => {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = setTimeout(() => {
+          console.error(`[merge] FFmpeg process hung for 60 seconds. Killing.`);
+          cmd.kill('SIGKILL');
+          reject(new Error('FFmpeg processing timeout (hung for 60s)'));
+        }, 60000);
+      };
+
+      resetTimeout();
+
+      if (format === 'audio') {
+        cmd = cmd.complexFilter(filterComplex, ['outa']).toFormat('mp3');
+        cmd.outputOptions(['-c:a', 'libmp3lame', '-b:a', '192k', '-ac', '2', '-ar', '44100', '-threads', '2']);
+      } else {
+        cmd = cmd.complexFilter(filterComplex, ['outv', 'outa']).toFormat('mp4');
+        const audioOpts = ['-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '44100'];
+        const videoOpts = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-movflags', '+faststart', '-pix_fmt', 'yuv420p', '-threads', '2'];
+        cmd.outputOptions([...videoOpts, ...audioOpts]);
+      }
+
+      // Apply text overlays to merged output
+      if (textLayers && textLayers.length > 0 && format !== 'audio') {
+        // Determine merged video dimensions
+        let mw = 1920; let mh = 1080;
+        if (format === 'portrait') { mw = 1080; mh = 1920; }
+        else if (format === 'square') { mw = 1080; mh = 1080; }
+
+        // Only apply global text layers (no clipId) to the merged output
+        const globalLayers = textLayers.filter(l => !l.clipId);
+        const drawtextFilters = VideoService.buildDrawtextFilters(
+          globalLayers, mw, mh, totalDuration
+        );
+        if (drawtextFilters.length > 0) {
+          drawtextFilters.forEach(f => {
+            cmd = cmd.videoFilter(f);
+          });
+          console.log(`[merge] Applied ${drawtextFilters.length} text overlay(s)`);
+        }
+      }
+
+      cmd
+        .on('start', (cmdLine) => console.log(`[merge] FFmpeg started: ${cmdLine.slice(0, 200)}...`))
+        .on('progress', (p) => {
+          resetTimeout();
+          let currentPercent = p.percent;
+
+          if (!currentPercent && p.timemark && totalDuration > 0) {
+            const parts = p.timemark.split(':');
+            if (parts.length === 3) {
+              const hrs = parseFloat(parts[0]) || 0;
+              const mins = parseFloat(parts[1]) || 0;
+              const secs = parseFloat(parts[2]) || 0;
+              const elapsed = (hrs * 3600) + (mins * 60) + secs;
+              currentPercent = Math.min(99, (elapsed / totalDuration) * 100);
+            }
+          }
+
+          if (currentPercent && onProgress) {
+            onProgress(currentPercent);
+          }
+        })
+        .on('end', () => {
+          clearTimeout(timeoutTimer);
+          console.log('\n[merge] Export complete');
+          fileExists(outputPath) ? resolve(outputPath) : reject(new Error('Output file missing after FFmpeg export'));
+        })
+        .on('error', (err) => {
+          clearTimeout(timeoutTimer);
+          console.error('\n[merge] FFmpeg error:', err.message);
           reject(err);
         })
         .save(outputPath);

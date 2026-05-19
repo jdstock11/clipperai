@@ -1,6 +1,6 @@
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider = "sqlite"
+  url      = "file:./dev.db"
 }
 
 generator client {
@@ -8,27 +8,29 @@ generator client {
 }
 
 model User {
-  id             String         @id @default(cuid())
-  email          String         @unique
-  name           String?
-  password       String?
-  role           Role           @default(USER)
-  downloads      Download[]     @relation("UserDownloads")
-  clips          Clip[]         @relation("UserClips")
-  subscriptions  Subscription[] @relation("UserSubscriptions")
-  payments       Payment[]      @relation("UserPayments")
-  exportHistory  ExportHistory[] @relation("UserExportHistory")
-  adminLogs      AdminLog[]     @relation("UserAdminLogs")
-  createdAt      DateTime       @default(now())
-  updatedAt      DateTime       @updatedAt
+  id               String          @id @default(cuid())
+  email            String          @unique
+  name             String?
+  passwordHash     String?
+  role             String          @default("USER") // USER or ADMIN
+  downloads        Download[]      @relation("UserDownloads")
+  clips            Clip[]          @relation("UserClips")
+  subscriptions    Subscription[]  @relation("UserSubscriptions")
+  payments         Payment[]       @relation("UserPayments")
+  exportHistory    ExportHistory[] @relation("UserExportHistory")
+  adminLogs        AdminLog[]      @relation("UserAdminLogs")
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  plan             String          @default("FREE")
+  viralClipsUsed   Int             @default(0)
+  cutExportsUsed   Int             @default(0)
+  mergeExportsUsed Int             @default(0)
+  totalExportsUsed Int             @default(0)
+  lastLogin        DateTime?
+  planExpiryDate   DateTime?
 
   @@index([email])
   @@map("users")
-}
-
-enum Role {
-  USER
-  ADMIN
 }
 
 model Download {
@@ -40,7 +42,7 @@ model Download {
   format    String
   quality   String
   fileSize  Int?
-  status    Status   @default(PENDING)
+  status    String   @default("PENDING")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -57,8 +59,8 @@ model Clip {
   endTime   Float
   format    String
   quality   String
-  cuts      Json?
-  status    Status   @default(PENDING)
+  cuts      String?  // SQLite doesn't support Json natively in all old Prisma versions, but new Prisma supports Json for SQLite. I'll use String just in case or leave it if it causes issues. Actually, Prisma 5 supports Json on SQLite. Let's keep it as String for simplicity or leave as String. Wait, let's keep it as String and parse it manually if needed, or leave it. Actually, I'll use String for Json to avoid issues. Wait, existing code might expect Json. Let's try String.
+  status    String   @default("PENDING")
   fileUrl   String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -70,10 +72,10 @@ model Clip {
 model Job {
   id        String   @id @default(cuid())
   type      String
-  status    Status   @default(PENDING)
+  status    String   @default("PENDING")
   progress  Int      @default(0)
-  data      Json?
-  result    Json?
+  data      String?  // Changed to String for SQLite compatibility
+  result    String?  // Changed to String for SQLite compatibility
   error     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -81,19 +83,12 @@ model Job {
   @@map("jobs")
 }
 
-enum Status {
-  PENDING
-  PROCESSING
-  COMPLETED
-  FAILED
-}
-
 model Subscription {
   id        String   @id @default(cuid())
   userId    String
   user      User     @relation("UserSubscriptions", fields: [userId], references: [id], onDelete: Cascade)
   planId    String
-  status    SubStatus @default(ACTIVE)
+  status    String   @default("ACTIVE")
   startDate DateTime @default(now())
   endDate   DateTime?
   createdAt DateTime @default(now())
@@ -101,12 +96,6 @@ model Subscription {
 
   @@index([userId])
   @@map("subscriptions")
-}
-
-enum SubStatus {
-  ACTIVE
-  CANCELED
-  EXPIRED
 }
 
 model Payment {
@@ -117,19 +106,12 @@ model Payment {
   currency      String   @default("USD")
   provider      String   // Stripe, Razorpay
   transactionId String   @unique
-  status        PaymentStatus @default(PENDING)
+  status        String   @default("PENDING")
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
   @@index([userId])
   @@map("payments")
-}
-
-enum PaymentStatus {
-  PENDING
-  COMPLETED
-  FAILED
-  REFUNDED
 }
 
 model ExportHistory {

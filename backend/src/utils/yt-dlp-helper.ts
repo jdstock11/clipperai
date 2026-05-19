@@ -24,9 +24,8 @@ export async function ensureYtDlpExists(forceDownload = false): Promise<void> {
 
   console.log("[yt-dlp] Downloading yt-dlp...");
   try {
-    const wrap = new YTDlpWrap();
     // downloadFromGithub defaults to Linux if not windows
-    await wrap.downloadFromGithub(ytDlpPath);
+    await YTDlpWrap.downloadFromGithub(ytDlpPath);
     console.log("[yt-dlp] Downloaded successfully to:", ytDlpPath);
     if (!isWin) {
       // Step 4: Add executable permission

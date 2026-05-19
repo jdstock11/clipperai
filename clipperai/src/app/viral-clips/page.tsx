@@ -5,8 +5,11 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft, Scissors, Play, Pause, Download, Film,
   Monitor, Smartphone, Square, Music, Loader2, Zap,
-  Clock, HardDrive, Cpu, Volume2, CheckCircle2, Layers
+  Clock, HardDrive, Cpu, Volume2, CheckCircle2, Layers, Type
 } from "lucide-react";
+import TextOverlayCanvas from "@/components/text-overlay/TextOverlayCanvas";
+import TextOverlayEditor from "@/components/text-overlay/TextOverlayEditor";
+import { useTextOverlayStore } from "@/store/useTextOverlayStore";
 
 const BACKEND_API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
 
@@ -51,6 +54,10 @@ export default function Editor() {
   const [exportFormat, setExportFormat] = useState("landscape");
   const [isExporting, setIsExporting] = useState(false);
   const [exportResult, setExportResult] = useState<string | null>(null);
+
+  // Text overlay
+  const [sidebarTab, setSidebarTab] = useState<'export' | 'text'>('export');
+  const { layers: textLayers, clearLayers: clearTextLayers } = useTextOverlayStore();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -142,6 +149,7 @@ export default function Editor() {
           startTime,
           endTime,
           format: exportFormat,
+          textLayers: textLayers.length > 0 ? textLayers : undefined,
         }),
       });
 
@@ -272,25 +280,29 @@ export default function Editor() {
                   )}
                 </div>
               ) : (
-                <video
-                  ref={videoRef}
-                  src={streamUrl ? `${BACKEND_API.replace('/api', '')}${streamUrl}` : undefined}
-                  className="w-full h-full object-contain"
-                  onTimeUpdate={handleTimeUpdate}
-                  onLoadedMetadata={() => {
-                    if (videoRef.current) {
-                      const d = videoRef.current.duration;
-                      if (d && d > 0 && !isNaN(d)) {
-                        setDuration(d);
-                        setEndTime(d);
+                <>
+                  <video
+                    ref={videoRef}
+                    src={streamUrl ? `${BACKEND_API.replace('/api', '')}${streamUrl}` : undefined}
+                    className="w-full h-full object-contain"
+                    onTimeUpdate={handleTimeUpdate}
+                    onLoadedMetadata={() => {
+                      if (videoRef.current) {
+                        const d = videoRef.current.duration;
+                        if (d && d > 0 && !isNaN(d)) {
+                          setDuration(d);
+                          setEndTime(d);
+                        }
                       }
-                    }
-                  }}
-                  onPlay={() => setPlaying(true)}
-                  onPause={() => setPlaying(false)}
-                  controls
-                  preload="metadata"
-                />
+                    }}
+                    onPlay={() => setPlaying(true)}
+                    onPause={() => setPlaying(false)}
+                    controls
+                    preload="metadata"
+                  />
+                  {/* Text Overlay Canvas */}
+                  <TextOverlayCanvas currentTime={currentTime} duration={duration} />
+                </>
               )}
             </div>
           </div>
@@ -386,8 +398,38 @@ export default function Editor() {
 
         {/* ── Right Sidebar ────────────────────────────────── */}
         <aside className="w-full lg:w-[340px] border-t lg:border-t-0 lg:border-l border-[var(--border)] flex flex-col overflow-y-auto">
+          {/* Sidebar Tab Toggle */}
+          <div className="flex border-b border-[var(--border)]">
+            <button
+              onClick={() => setSidebarTab('export')}
+              className={`flex-1 py-3 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
+                sidebarTab === 'export'
+                  ? 'text-[var(--primary)] border-b-2 border-[var(--primary)] bg-[var(--primary-dim)]'
+                  : 'text-[var(--muted)] hover:text-white'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              Export
+            </button>
+            <button
+              onClick={() => setSidebarTab('text')}
+              className={`flex-1 py-3 text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
+                sidebarTab === 'text'
+                  ? 'text-[var(--primary)] border-b-2 border-[var(--primary)] bg-[var(--primary-dim)]'
+                  : 'text-[var(--muted)] hover:text-white'
+              }`}
+            >
+              <Type className="w-3.5 h-3.5" />
+              Text{textLayers.length > 0 ? ` (${textLayers.length})` : ''}
+            </button>
+          </div>
+
           <div className="p-5 space-y-5 flex-1">
 
+            {sidebarTab === 'text' ? (
+              <TextOverlayEditor duration={duration} />
+            ) : (
+            <>
             {/* Video Info Card */}
             <div className="glass rounded-xl p-4 space-y-3">
               <div className="flex items-center gap-2 mb-1">
@@ -524,6 +566,8 @@ export default function Editor() {
                   💾 Save File
                 </a>
               </div>
+            )}
+            </>
             )}
           </div>
         </aside>

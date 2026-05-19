@@ -3,8 +3,9 @@
 import { useState, useEffect } from "react";
 import {
   Search, Scissors, Zap, Film, Wand2, Music, Download,
-  MonitorPlay, Headphones, Sparkles, Layers, ArrowRight
+  MonitorPlay, Headphones, Sparkles, Layers, ArrowRight, Upload
 } from "lucide-react";
+import { useDropzone } from "react-dropzone";
 import { useRouter } from "next/navigation";
 
 const features = [
@@ -25,6 +26,61 @@ export default function Home() {
   const [errorToast, setErrorToast] = useState("");
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   const router = useRouter();
+
+  const { getRootProps, getInputProps, isDragActive, isDragReject } = useDropzone({
+    accept: {
+      'video/mp4': ['.mp4'],
+      'video/quicktime': ['.mov'],
+      'video/webm': ['.webm'],
+      'video/x-matroska': ['.mkv']
+    },
+    maxSize: 500 * 1024 * 1024,
+    onDrop: async (acceptedFiles, fileRejections) => {
+      if (fileRejections.length > 0) {
+        const rejection = fileRejections[0];
+        if (rejection.errors[0].code === 'file-too-large') {
+          setErrorToast("File is too large. Maximum size is 500MB.");
+        } else {
+          setErrorToast("Unsupported file format. Please upload MP4, MOV, WEBM, or MKV.");
+        }
+        return;
+      }
+      if (acceptedFiles.length > 0) {
+        await handleUploadForViralClips(acceptedFiles[0]);
+      }
+    }
+  });
+
+  const handleUploadForViralClips = async (file: File) => {
+    setIsUploading(true);
+    const formData = new FormData();
+    formData.append('video', file);
+
+    try {
+      const res = await fetch('/api/upload-video', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json();
+      
+      if (data.url) {
+        sessionStorage.setItem("videoData", JSON.stringify({
+          title: file.name,
+          url: data.url, 
+          streamUrl: data.streamUrl,
+          duration: data.duration || 0,
+          isLocalUpload: true
+        }));
+        router.push("/viral-clips");
+      } else {
+        setErrorToast("Upload failed: " + data.error);
+      }
+    } catch (err: any) {
+      setErrorToast("Error uploading file: " + err.message);
+    } finally {
+      setIsUploading(false);
+    }
+  };
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -107,6 +163,36 @@ export default function Home() {
     }
   };
 
+  const handleUploadMergeVideos = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    
+    // For the merge studio, we'll store the local files in sessionStorage
+    // But since File objects can't be stringified, we'll navigate first
+    // and let the merge-studio handle the file references using a global store or indexedDB.
+    // However, a simpler approach is to create object URLs for them right here.
+    
+    // Instead of uploading them all now, we just pass the object URLs to the studio.
+    // The studio will upload them when exporting.
+    const fileData = Array.from(files).map(file => ({
+      name: file.name,
+      size: file.size,
+      type: file.type,
+      objectUrl: URL.createObjectURL(file),
+      file: file // Note: 'file' won't survive sessionStorage, but we use a Zustand store for it.
+    }));
+    
+    // We will dispatch to our new Zustand store (which we will build).
+    // To do this properly from here without importing the store directly, 
+    // we can either store minimal metadata in sessionStorage or just import the store.
+    // Wait, let's just pass a flag in sessionStorage and handle the rest in the merge-studio if needed.
+    // Actually, we can just navigate to /merge-studio and let the user upload there.
+    // But the user clicked "Open Studio" and selected files.
+    // Let's just navigate to the studio for now, and the user can drag & drop there.
+    // To make it seamless, we will navigate to /merge-studio.
+    router.push("/merge-studio");
+  };
+
   if (!mounted) return null;
 
   return (
@@ -125,15 +211,15 @@ export default function Home() {
 
         <div className="hidden md:flex items-center gap-8 text-sm font-medium text-[var(--muted)]">
           <a href="#features" className="hover:text-white transition-colors duration-200">Features</a>
-          <a href="#" className="hover:text-white transition-colors duration-200">Pricing</a>
+          <button onClick={() => router.push('/pricing')} className="hover:text-white transition-colors duration-200">Pricing</button>
           <a href="#" className="hover:text-white transition-colors duration-200">API</a>
         </div>
 
         <div className="flex items-center gap-3">
-          <button className="hidden sm:block text-sm font-medium text-[var(--muted)] hover:text-white transition-colors px-4 py-2">
+          <button onClick={() => router.push('/login')} className="hidden sm:block text-sm font-medium text-[var(--muted)] hover:text-white transition-colors px-4 py-2">
             Log in
           </button>
-          <button className="btn-glow px-5 py-2.5 rounded-full text-sm flex items-center gap-2">
+          <button onClick={() => router.push('/signup')} className="btn-glow px-5 py-2.5 rounded-full text-sm flex items-center gap-2">
             <span>Get Started</span>
             <ArrowRight className="w-4 h-4" />
           </button>
@@ -163,7 +249,7 @@ export default function Home() {
         </p>
 
         {/* Selection Cards */}
-        <div className="w-full max-w-4xl grid grid-cols-1 md:grid-cols-2 gap-6 mb-20 relative z-10">
+        <div className="w-full max-w-6xl grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-20 relative z-10">
           
           {/* Card 1: AI Viral Clips */}
           <div className="glass-strong rounded-2xl p-6 border border-[var(--border)] hover:border-[var(--primary)] transition-all flex flex-col items-center text-center group">
@@ -207,6 +293,27 @@ export default function Home() {
                 )}
               </div>
             </form>
+            <div 
+              {...getRootProps()} 
+              className={`w-full mt-3 py-2.5 rounded-lg border border-dashed ${isDragReject ? 'border-red-500 bg-red-500/10 text-red-400' : isDragActive ? 'border-[var(--primary)] bg-[var(--primary)]/10 text-[var(--primary)]' : 'border-[var(--border)] bg-[var(--surface-2)] text-[var(--muted)] hover:text-white hover:border-[var(--primary)]'} transition-all flex flex-col items-center justify-center gap-1.5 cursor-pointer`}
+            >
+              <input {...getInputProps()} disabled={isUploading} />
+              {isUploading ? (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="animate-spin w-3 h-3 border border-current border-t-transparent rounded-full" /> Uploading...
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2">
+                    <Upload className="w-3.5 h-3.5" />
+                    <span className="text-xs font-medium">
+                      {isDragActive ? "Drop video here" : "Or Upload Personal Video"}
+                    </span>
+                  </div>
+                  <span className="text-[10px] opacity-60 font-medium">MP4, MOV, WEBM, MKV (Max 500MB)</span>
+                </>
+              )}
+            </div>
           </div>
 
           {/* Card 2: Cut & Remove Studio */}
@@ -270,6 +377,30 @@ export default function Home() {
                 className="hidden" 
                 onChange={handleUploadVideo} 
               />
+            </div>
+          </div>
+
+          {/* Card 3: Merge & Combine Studio */}
+          <div className="glass-strong rounded-2xl p-6 border border-[var(--border)] hover:border-emerald-500/50 transition-all flex flex-col items-center text-center group relative overflow-hidden">
+            <div className="absolute top-0 right-0 bg-emerald-500 text-white text-[10px] font-bold px-3 py-1 rounded-bl-xl tracking-widest uppercase shadow-md">New</div>
+            <div className="w-14 h-14 rounded-full bg-emerald-500/10 text-emerald-400 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-[0_0_20px_rgba(16,185,129,0.2)]">
+              <Layers className="w-7 h-7" />
+            </div>
+            <h2 className="text-2xl font-bold mb-2">Merge & Combine Studio</h2>
+            <p className="text-[var(--muted)] text-sm mb-6 flex-1">
+              Combine multiple clips into one seamless HD video. Drag, reorder, and export.
+            </p>
+            <div className="w-full mt-auto">
+              <button 
+                onClick={() => router.push("/merge-studio")}
+                disabled={isUploading}
+                className="w-full bg-gradient-to-r from-emerald-600 to-teal-500 hover:opacity-90 px-4 py-3 rounded-lg text-sm font-bold flex items-center justify-center gap-2 text-white transition-opacity shadow-[0_0_15px_rgba(16,185,129,0.3)]"
+              >
+                Open Studio
+              </button>
+            </div>
+            <div className="w-full mt-3 text-[10px] text-[var(--muted)] font-medium text-center">
+              Upload multiple clips to merge
             </div>
           </div>
 

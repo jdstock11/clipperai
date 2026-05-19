@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEditorStore } from "@/store/editorStore";
 import Timeline from "@/components/cut-studio/Timeline";
 import Toolbar from "@/components/cut-studio/Toolbar";
+import ManualTimeRemove from "@/components/cut-studio/ManualTimeRemove";
 import {
   ArrowLeft, Film, Monitor, Smartphone, Square, Music, 
   Loader2, Zap, Clock, Cpu, Volume2, CheckCircle2, Layers, Download, Play, Pause
@@ -390,6 +391,9 @@ export default function Editor() {
               )}
             </div>
           </div>
+
+          {/* Manual Time Remove */}
+          {previewReady && (mode === 'remove' || mode === 'multi') && <ManualTimeRemove />}
 
           {/* Timeline */}
           {previewReady && <Timeline />}
