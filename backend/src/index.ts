@@ -4,17 +4,43 @@ import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import http from 'http';
 import path from 'path';
+import { Server as SocketIOServer } from 'socket.io';
 import YTDlpWrap from 'yt-dlp-wrap';
 import fs from 'fs';
 import { VideoService, DIRS } from './services/video.service';
+import { CartoonService } from './services/cartoon.service';
 import { renderQueue } from './queue/renderQueue';
 import multer from 'multer';
 import './workers/renderWorker';
 import { executeYtDlpWithRetry, ensureYtDlpExists, getYtDlpWrap } from './utils/yt-dlp-helper';
 import authRoutes from './routes/auth.routes';
+import adminRoutes from './routes/admin.routes';
+import jwt from 'jsonwebtoken';
 
-// Simple in-memory cache for metadata
+// ── JWT Middleware ───────────────────────────────────────────────────
+export interface AuthRequest extends express.Request {
+  user?: { id: string; role: string };
+}
+
+const verifyUser = (req: AuthRequest, res: express.Response, next: express.NextFunction) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ error: 'Unauthorized: Missing token' });
+  
+  const token = authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'Unauthorized: Invalid token format' });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret') as any;
+    req.user = decoded;
+    next();
+  } catch (err) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+  }
+};
+
+// Simple in-memory cache for metadata and preview statuses
 const metadataCache = new Map<string, { data: any, timestamp: number }>();
+const previewStatusCache = new Map<string, any>();
 const CACHE_TTL_MS = 1000 * 60 * 60; // 1 hour
 
 dotenv.config();
@@ -37,6 +63,18 @@ ensureYtDlpExists().then(async () => {
 // ── Express ──────────────────────────────────────────────────────────
 const app = express();
 const server = http.createServer(app);
+const io = new SocketIOServer(server, {
+  cors: { origin: process.env.FRONTEND_URL || 'http://localhost:3000', methods: ['GET', 'POST'] }
+});
+app.set('io', io);
+
+io.on('connection', (socket) => {
+  console.log('[socket] Admin connected:', socket.id);
+  socket.on('disconnect', () => {
+    console.log('[socket] Admin disconnected:', socket.id);
+  });
+});
+
 const prisma = new PrismaClient();
 app.use(cors());
 app.use(express.json());
@@ -49,8 +87,9 @@ const PORT = process.env.PORT || 4000;
 
 const upload = multer({ dest: DIRS.temp, limits: { fileSize: 500 * 1024 * 1024 } });
 
-// ── Auth Routes ──────────────────────────────────────────────────────
+// ── Auth & Admin Routes ───────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
+app.use('/api/admin', adminRoutes);
 
 // ── Upload video (Local File) ────────────────────────────────────────
 app.post('/api/upload-video', upload.single('video'), async (req, res) => {
@@ -136,7 +175,7 @@ app.post('/api/fetch-video', async (req, res) => {
   }
 });
 
-// ── Prepare preview (Synchronous API) ────────────────────────────────
+// ── Prepare preview (Asynchronous API for Smart Proxy) ────────────────
 app.post('/api/prepare-preview', async (req, res) => {
   const { url, duration } = req.body;
   if (!url) return res.status(400).json({ error: 'URL is required' });
@@ -146,59 +185,73 @@ app.post('/api/prepare-preview', async (req, res) => {
     localFile = url.replace('local://', '');
   }
 
-  // Delete old previews before generating new ones to prevent cache issues
-  try {
-    fs.readdirSync(DIRS.previews).forEach(f => {
-      const fp = path.join(DIRS.previews, f);
-      // DO NOT delete the local file we just uploaded!
-      if (fp !== localFile) {
-        try { fs.unlinkSync(fp); } catch { /* ignore */ }
-      }
-    });
-  } catch { /* ignore */ }
-
+  // Generate an ID for this preview job
   const previewId = `pv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-  console.log(`[preview] Generating preview synchronously: ${previewId}`);
+  console.log(`[preview] Kicking off async preview generation: ${previewId}`);
 
-  try {
-    let finalPath = '';
+  // Initialize status
+  previewStatusCache.set(previewId, { status: 'processing' });
+  
+  // Return immediately to unblock the frontend
+  res.json({ previewId, status: 'processing' });
 
-    if (localFile) {
-      if (!fs.existsSync(localFile)) {
-        throw new Error(`Local file not found: ${localFile}`);
-      }
-      console.log(`[preview] Processing local file: ${localFile}`);
-      finalPath = await VideoService.encodeLocalPreview(localFile, previewId);
-    } else {
-      const rawPath = await VideoService.downloadPreview(url, previewId);
-      finalPath = rawPath;
-
+  // Run generation in the background
+  (async () => {
+    try {
+      // Clean old previews (except current local upload)
       try {
-        finalPath = await VideoService.encodePreview(rawPath, previewId);
-      } catch {
-        console.warn('[preview] Encode failed, using raw download');
+        fs.readdirSync(DIRS.previews).forEach(f => {
+          const fp = path.join(DIRS.previews, f);
+          if (fp !== localFile) {
+            try { fs.unlinkSync(fp); } catch { /* ignore */ }
+          }
+        });
+      } catch { /* ignore */ }
+
+      let finalPath = '';
+
+      if (localFile) {
+        if (!fs.existsSync(localFile)) throw new Error(`Local file not found: ${localFile}`);
+        console.log(`[preview] Processing local file: ${localFile}`);
+        finalPath = await VideoService.encodeLocalPreview(localFile, previewId);
+      } else {
+        const rawPath = await VideoService.downloadPreview(url, previewId);
+        finalPath = rawPath;
+        try {
+          finalPath = await VideoService.encodePreview(rawPath, previewId);
+        } catch {
+          console.warn('[preview] Encode failed, using raw download');
+        }
       }
+
+      if (!fs.existsSync(finalPath) || fs.statSync(finalPath).size === 0) {
+        throw new Error('Preview file is empty or missing after processing');
+      }
+
+      const metadata = await VideoService.getVideoMetadata(finalPath);
+      const thumbnails = await VideoService.generateThumbnail(finalPath, previewId);
+      const streamUrl = `/api/stream/${path.basename(finalPath)}`;
+
+      // Update cache with success
+      previewStatusCache.set(previewId, {
+        status: 'ready',
+        streamUrl,
+        thumbnails,
+        metadata
+      });
+      console.log(`[preview] ${previewId} generation complete`);
+    } catch (err: any) {
+      console.error(`[preview] Failed: ${previewId} —`, err.message);
+      previewStatusCache.set(previewId, { status: 'failed', error: err.message });
     }
+  })();
+});
 
-    if (!fs.existsSync(finalPath) || fs.statSync(finalPath).size === 0) {
-      throw new Error('Preview file is empty or missing after processing');
-    }
-
-    const metadata = await VideoService.getVideoMetadata(finalPath);
-    const thumbnails = await VideoService.generateThumbnail(finalPath, previewId);
-    const streamUrl = `/api/stream/${path.basename(finalPath)}`;
-
-    res.json({
-      previewId,
-      status: 'ready',
-      streamUrl,
-      thumbnails,
-      metadata,
-    });
-  } catch (err: any) {
-    console.error(`[preview] Failed: ${previewId} —`, err.message);
-    res.status(500).json({ error: 'Preview generation failed: ' + err.message });
-  }
+// ── Preview Status Polling ───────────────────────────────────────────
+app.get('/api/preview-status/:previewId', (req, res) => {
+  const status = previewStatusCache.get(req.params.previewId);
+  if (!status) return res.status(404).json({ error: 'Preview job not found' });
+  res.json(status);
 });
 
 // ── Stream video file (with range support for seeking) ───────────────
@@ -240,29 +293,24 @@ app.get('/api/stream/:filename', (req, res) => {
 });
 
 // ── Cut Video (export via Queue, with direct fallback) ────────────────
-app.post('/api/cut-video', async (req, res) => {
-  const { sourceUrl, streamUrl, cuts, startTime, endTime, format, watermark } = req.body;
+app.post('/api/cut-video', verifyUser, async (req: AuthRequest, res: express.Response) => {
+  const { sourceUrl, streamUrl, startTime, endTime, format, cuts, watermark, quality } = req.body;
   if (!sourceUrl) {
     return res.status(400).json({ error: 'Missing sourceUrl' });
   }
 
   const clipId = `clip_${Date.now()}`;
+  const userId = req.user?.id;
 
   try {
-    await prisma.user.upsert({
-      where: { email: 'demo@example.com' },
-      update: {},
-      create: { id: 'demo-user', email: 'demo@example.com', name: 'Demo User' }
-    });
-
     const clip = await prisma.clip.create({
       data: {
-        userId: 'demo-user',
+        userId: userId as string,
         sourceUrl,
         startTime: startTime || 0,
         endTime: endTime || 0,
         format: format || 'landscape',
-        quality: 'MVP',
+        quality: quality || 'HD 720p',
         status: 'PENDING',
         cuts: cuts ? JSON.stringify(cuts) : undefined
       }
@@ -299,8 +347,17 @@ app.post('/api/cut-video', async (req, res) => {
       let inputFile = '';
       if (streamUrl) {
         const filename = path.basename(streamUrl);
-        const previewPath = path.join(DIRS.previews, filename);
-        if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) inputFile = previewPath;
+        // SMART PROXY: Swap proxy for raw source to maintain original quality on export
+        const rawFilename = filename.replace('_encoded', '_raw');
+        const rawPath = path.join(DIRS.previews, rawFilename);
+        const encodedPath = path.join(DIRS.previews, filename);
+        
+        if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
+          inputFile = rawPath;
+          console.log(`[cut] Using high-quality source: ${rawFilename}`);
+        } else if (fs.existsSync(encodedPath) && fs.statSync(encodedPath).size > 0) {
+          inputFile = encodedPath;
+        }
       }
       if (!inputFile) {
         const existing = VideoService.findExistingPreview();
@@ -323,9 +380,9 @@ app.post('/api/cut-video', async (req, res) => {
       };
 
       if (cuts && Array.isArray(cuts) && cuts.length > 0) {
-        await VideoService.processMultiClip(inputFile, outputFile, format, cuts, watermark, onProgress);
+        await VideoService.processMultiClip(inputFile, outputFile, format, cuts, watermark, onProgress, quality || 'HD 720p');
       } else {
-        await VideoService.processClip(inputFile, outputFile, format, startTime, endTime, watermark, onProgress);
+        await VideoService.processClip(inputFile, outputFile, format, startTime, endTime, watermark, onProgress, undefined, quality || 'HD 720p');
       }
 
       const fileUrl = `/uploads/${path.basename(outputFile)}`;
@@ -341,23 +398,26 @@ app.post('/api/cut-video', async (req, res) => {
 });
 
 // ── Merge Videos ────────────────────────────────────────────────────────
-app.post('/api/merge-video', async (req, res) => {
-  const { urls, format, textLayers } = req.body;
+app.post('/api/merge-video', verifyUser, async (req: AuthRequest, res: express.Response) => {
+  const { urls, format, textLayers, quality } = req.body;
   if (!urls || !Array.isArray(urls) || urls.length < 2) {
     return res.status(400).json({ error: 'At least two video URLs are required for merging' });
   }
 
   const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const clipId = `merge_${Date.now()}`;
+  const userId = req.user?.id;
 
   try {
+    // We can also create a clip record for the merged video if desired,
+    // but the current logic creates a job. We'll just pass the job.
     const jobRecord = await prisma.job.create({
       data: {
         id: jobId,
         type: 'MERGE_VIDEOS',
         status: 'PROCESSING',
         progress: 10,
-        data: JSON.stringify({ urls, format })
+        data: JSON.stringify({ urls, format, userId }) // Optional: track user ID in job data
       }
     });
 
@@ -371,8 +431,21 @@ app.post('/api/merge-video', async (req, res) => {
         for (const url of urls) {
           if (url.startsWith('/api/stream/')) {
             const filename = path.basename(url);
-            let fp = path.join(DIRS.previews, filename);
-            if (!fs.existsSync(fp)) fp = path.join(DIRS.uploads, filename);
+            // SMART PROXY: Swap proxy for raw source
+            const rawFilename = filename.replace('_encoded', '_raw');
+            const rawPath = path.join(DIRS.previews, rawFilename);
+            const encodedPath = path.join(DIRS.previews, filename);
+            let fp = rawPath;
+            
+            if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
+              fp = rawPath;
+              console.log(`[merge] Using high-quality source: ${rawFilename}`);
+            } else if (fs.existsSync(encodedPath) && fs.statSync(encodedPath).size > 0) {
+              fp = encodedPath;
+            } else {
+              fp = path.join(DIRS.uploads, filename);
+            }
+            
             if (fs.existsSync(fp) && fs.statSync(fp).size > 0) {
               inputPaths.push(fp);
             } else {
@@ -397,7 +470,7 @@ app.post('/api/merge-video', async (req, res) => {
           } catch { /* ignore */ }
         };
 
-        await VideoService.mergeVideos(inputPaths, outputFile, format || 'landscape', onProgress, textLayers);
+        await VideoService.mergeVideos(inputPaths, outputFile, format || 'landscape', onProgress, textLayers, quality || 'HD 720p');
 
         const fileUrl = `/uploads/${path.basename(outputFile)}`;
         await prisma.job.update({ 
@@ -420,9 +493,105 @@ app.post('/api/merge-video', async (req, res) => {
   }
 });
 
+const cartoonJobs = new Map<string, any>();
+
+// ── AI Cartoon Generation ─────────────────────────────────────────────
+app.post('/api/generate-cartoon', async (req: AuthRequest, res: express.Response) => {
+  const { sourceUrl, streamUrl, style, startTime, endTime } = req.body;
+  if (!sourceUrl) {
+    return res.status(400).json({ error: 'Missing sourceUrl' });
+  }
+
+  const clipId = `cartoon_${Date.now()}`;
+  const userId = req.user?.id;
+
+  try {
+    const jobId = `job_cartoon_${Date.now()}`;
+    cartoonJobs.set(jobId, {
+      id: jobId,
+      type: 'RENDER_CARTOON',
+      status: 'PENDING',
+      progress: 0,
+      data: JSON.stringify({ sourceUrl, streamUrl, style, startTime, endTime })
+    });
+
+    res.json({ jobId, status: 'PROCESSING' });
+
+    // Direct processing (async)
+    (async () => {
+      try {
+        const updateJob = (data: any) => {
+          const current = cartoonJobs.get(jobId);
+          if (current) cartoonJobs.set(jobId, { ...current, ...data });
+        };
+
+        updateJob({ status: 'PROCESSING', progress: 10 });
+
+        // Resolve input file
+        let inputFile = '';
+        if (streamUrl) {
+          const filename = path.basename(streamUrl);
+          const rawFilename = filename.replace('_encoded', '_raw');
+          const rawPath = path.join(DIRS.previews, rawFilename);
+          const encodedPath = path.join(DIRS.previews, filename);
+          
+          if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
+            inputFile = rawPath;
+            console.log(`[cartoon] Using high-quality source: ${rawFilename}`);
+          } else if (fs.existsSync(encodedPath) && fs.statSync(encodedPath).size > 0) {
+            inputFile = encodedPath;
+          }
+        }
+        if (!inputFile) {
+          const existing = VideoService.findExistingPreview();
+          if (existing) inputFile = existing;
+        }
+        if (!inputFile) {
+          await VideoService.downloadPreview(sourceUrl, clipId);
+          const downloaded = VideoService.findExistingPreview();
+          if (downloaded) inputFile = downloaded;
+          else throw new Error('Could not obtain source video for export');
+        }
+
+        const outputFile = path.join(DIRS.uploads, `${clipId}.mp4`);
+
+        const onProgress = async (percent: number, stage?: string) => {
+          try {
+            updateJob({ progress: Math.round(percent), stage: stage || '' });
+          } catch { /* ignore */ }
+        };
+
+        // Call the AI frame-by-frame cartoon pipeline
+        await CartoonService.processCartoonAI(inputFile, outputFile, style || 'Anime', startTime, endTime, onProgress);
+
+        const fileUrl = `/uploads/${path.basename(outputFile)}`;
+        const downloadUrl = `/api/download/${path.basename(outputFile)}`;
+        const resultObj = { fileUrl, downloadUrl };
+        updateJob({ status: 'COMPLETED', progress: 100, result: JSON.stringify(resultObj) });
+
+      } catch (err: any) {
+        console.error('[cartoon] Async error:', err.message);
+        const current = cartoonJobs.get(jobId);
+        if (current) cartoonJobs.set(jobId, { ...current, status: 'FAILED', error: err.message });
+      }
+    })();
+
+  } catch (error: any) {
+    console.error('[cartoon] Route error:', error.message);
+    res.status(500).json({ error: 'Failed to initiate cartoon generation: ' + error.message });
+  }
+});
+
+// ── Cartoon Job polling endpoint ─────────────────────────────────────────────
+app.get('/api/cartoon-jobs/:id', (req, res) => {
+  const job = cartoonJobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json(job);
+});
+
 // ── Create clip (Synchronous) for Viral Clips ─────────────────────────
-app.post('/api/create-clip', async (req, res) => {
-  const { sourceUrl, streamUrl, startTime, endTime, format, textLayers } = req.body;
+app.post('/api/create-clip', async (req: express.Request, res: express.Response) => {
+  const { sourceUrl, streamUrl, startTime, endTime, format, textLayers, quality } = req.body;
   if (!sourceUrl || startTime === undefined || endTime === undefined) {
     return res.status(400).json({ error: 'Missing parameters' });
   }
@@ -432,22 +601,20 @@ app.post('/api/create-clip', async (req, res) => {
   const outputFile = path.join(DIRS.uploads, `${clipId}.${ext}`);
 
   try {
-    await prisma.user.upsert({
-      where: { email: 'demo@example.com' },
-      update: {},
-      create: { id: 'demo-user', email: 'demo@example.com', name: 'Demo User' }
-    });
-
-    const clip = await prisma.clip.create({
-      data: { userId: 'demo-user', sourceUrl, startTime, endTime, format: format || 'landscape', quality: 'MVP', status: 'PROCESSING' }
-    });
-
     let inputFile = '';
 
     if (streamUrl) {
       const filename = path.basename(streamUrl);
-      const previewPath = path.join(DIRS.previews, filename);
-      if (fs.existsSync(previewPath) && fs.statSync(previewPath).size > 0) inputFile = previewPath;
+      const rawFilename = filename.replace('_encoded', '_raw');
+      const rawPath = path.join(DIRS.previews, rawFilename);
+      const encodedPath = path.join(DIRS.previews, filename);
+      
+      if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
+        inputFile = rawPath;
+        console.log(`[clip] Using high-quality source: ${rawFilename}`);
+      } else if (fs.existsSync(encodedPath) && fs.statSync(encodedPath).size > 0) {
+        inputFile = encodedPath;
+      }
     }
 
     if (!inputFile) {
@@ -462,14 +629,18 @@ app.post('/api/create-clip', async (req, res) => {
       else throw new Error('Could not obtain source video for export');
     }
 
-    await VideoService.processClip(inputFile, outputFile, format, startTime, endTime, undefined, undefined, textLayers);
+    await VideoService.processClip(inputFile, outputFile, format, startTime, endTime, undefined, undefined, textLayers, quality || 'HD 720p');
 
-    await prisma.clip.update({
-      where: { id: clip.id },
-      data: { status: 'COMPLETED', fileUrl: `/uploads/${path.basename(outputFile)}` }
-    });
+    // Auto-cleanup temp file after 30 minutes if not downloaded
+    setTimeout(() => {
+      if (fs.existsSync(outputFile)) {
+        try { fs.unlinkSync(outputFile); } catch (e) {}
+      }
+    }, 30 * 60 * 1000);
 
-    res.json({ clipId: clip.id, fileUrl: `/uploads/${path.basename(outputFile)}` });
+    const fileUrl = `/uploads/${path.basename(outputFile)}`;
+    const downloadUrl = `/api/download/${path.basename(outputFile)}`;
+    res.json({ clipId, fileUrl, downloadUrl });
   } catch (error: any) {
     console.error('[clip] Error:', error.message);
     res.status(500).json({ error: 'Failed to create clip: ' + error.message });
@@ -501,9 +672,97 @@ app.get('/api/download/:filename', (req, res) => {
   const filename = path.basename(req.params.filename);
   const filePath = path.join(DIRS.uploads, filename);
   if (!fs.existsSync(filePath)) {
-    return res.status(404).json({ error: 'File not found' });
+    return res.status(404).json({ error: 'File not found or expired' });
   }
-  res.download(filePath, filename);
+
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Content-Disposition', `attachment; filename="clipforge-export.mp4"`);
+
+  res.download(filePath, 'clipforge-export.mp4', (err) => {
+    if (!err) {
+      // Auto cleanup after successful download
+      setTimeout(() => {
+        if (fs.existsSync(filePath)) {
+          try { fs.unlinkSync(filePath); } catch (e) {}
+        }
+      }, 5000);
+    }
+  });
+});
+
+// ── AI Scene Analyzer (Mock Engine) ───────────────────────────────────
+app.post('/api/analyze-video', async (req, res) => {
+  const { url, duration } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL is required' });
+
+  try {
+    // Simulate processing time
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    
+    // Fallback duration if not provided
+    const vidDuration = duration || 300; 
+    
+    // Generate intelligent mock clips based on video duration
+    const clips = [];
+    
+    if (vidDuration > 60) {
+      clips.push({
+        id: 'clip_1',
+        category: 'Comedy',
+        title: 'Hilarious Reaction',
+        reason: 'Funny reaction and audience-friendly humor perfectly suited for TikTok.',
+        startTime: Math.max(0, vidDuration * 0.15),
+        endTime: Math.min(vidDuration, vidDuration * 0.15 + 36),
+        duration: 36,
+        confidence: 96
+      });
+      
+      clips.push({
+        id: 'clip_2',
+        category: 'Emotional',
+        title: 'Deep Conversation',
+        reason: 'High-retention emotional dialogue with strong engagement potential.',
+        startTime: Math.max(0, vidDuration * 0.45),
+        endTime: Math.min(vidDuration, vidDuration * 0.45 + 45),
+        duration: 45,
+        confidence: 91
+      });
+    }
+
+    if (vidDuration > 120) {
+      clips.push({
+        id: 'clip_3',
+        category: 'Action',
+        title: 'Intense Climax',
+        reason: 'Fast-paced sequence with high visual interest and dynamic movement.',
+        startTime: Math.max(0, vidDuration * 0.75),
+        endTime: Math.min(vidDuration, vidDuration * 0.75 + 28),
+        duration: 28,
+        confidence: 88
+      });
+    }
+
+    if (clips.length === 0) {
+      // Very short video fallback
+      clips.push({
+        id: 'clip_1',
+        category: 'Viral',
+        title: 'Key Moment',
+        reason: 'The most engaging segment of this short video.',
+        startTime: 0,
+        endTime: Math.min(vidDuration, 30),
+        duration: Math.min(vidDuration, 30),
+        confidence: 95
+      });
+    }
+
+    res.json({
+      summary: "This video has been analyzed by ClipForge AI. It features a blend of humor, emotional depth, and fast-paced action. The AI has segmented the most engaging moments into ready-to-publish short-form clips optimized for high retention.",
+      clips
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: 'AI analysis failed: ' + error.message });
+  }
 });
 
 // ── Static files ─────────────────────────────────────────────────────
@@ -511,8 +770,8 @@ app.use('/uploads', express.static(DIRS.uploads));
 app.use('/previews', express.static(DIRS.previews));
 app.use('/thumbnails', express.static(DIRS.thumbnails));
 
-// ── Periodic cleanup (every hour) ────────────────────────────────────
-setInterval(() => { try { VideoService.cleanup(); } catch { } }, 3600000);
+// ── Periodic cleanup (every 5 mins) ────────────────────────────────────
+setInterval(() => { try { VideoService.cleanup(); } catch { } }, 300000);
 
 // ── Start ────────────────────────────────────────────────────────────
 server.listen(PORT, () => {

@@ -36,12 +36,31 @@ export default function LoginPage() {
     setIsLoading(true);
     setErrors({});
 
-    // Simulate API call — replace with real auth later
-    await new Promise((r) => setTimeout(r, 1500));
-    setIsLoading(false);
+    try {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
+      const res = await fetch(`${API_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
 
-    // Placeholder: just redirect to home
-    router.push("/");
+      const data = await res.json();
+      if (!res.ok) {
+        setErrors({ general: data.error || 'Login failed' });
+        setIsLoading(false);
+        return;
+      }
+
+      localStorage.setItem('userToken', data.token);
+      localStorage.setItem('userEmail', data.user.email);
+      localStorage.setItem('userId', data.user.id);
+
+      router.push("/");
+    } catch (err: any) {
+      setErrors({ general: 'Network error occurred' });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

@@ -49,12 +49,27 @@ export default function SignupPage() {
     setIsLoading(true);
     setErrors({});
 
-    // Simulate API call — replace with real auth later
-    await new Promise((r) => setTimeout(r, 1800));
-    setIsLoading(false);
+    try {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
+      const res = await fetch(`${API_URL}/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, email, password }),
+      });
 
-    // Placeholder redirect
-    router.push("/login");
+      const data = await res.json();
+      if (!res.ok) {
+        setErrors({ general: data.error || 'Signup failed' });
+        setIsLoading(false);
+        return;
+      }
+
+      router.push("/login?registered=true");
+    } catch (err: any) {
+      setErrors({ general: 'Network error occurred' });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const passwordStrength = PASSWORD_RULES.filter((r) => r.test(password)).length;

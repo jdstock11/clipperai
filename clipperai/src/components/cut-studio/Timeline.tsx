@@ -113,11 +113,88 @@ export default function Timeline() {
                 className="absolute inset-y-0 bg-[var(--primary)]/10 border-y border-[var(--primary)]/50 z-10"
                 style={{ left: `${(startTime / duration) * 100}%`, width: `${((endTime - startTime) / duration) * 100}%` }}
               >
-                {/* Handles */}
-                <div className="absolute top-0 bottom-0 -left-1.5 w-3 bg-[var(--primary)] rounded-full shadow-[0_0_15px_var(--primary)] cursor-ew-resize z-20 flex items-center justify-center">
+                {/* Start Handle — draggable */}
+                <div 
+                  className="absolute top-0 bottom-0 -left-1.5 w-3 bg-[var(--primary)] rounded-full shadow-[0_0_15px_var(--primary)] cursor-ew-resize z-20 flex items-center justify-center"
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    const onMove = (ev: MouseEvent) => {
+                      if (!trackRef.current) return;
+                      const rect = trackRef.current.getBoundingClientRect();
+                      const x = Math.max(0, Math.min(ev.clientX - rect.left, rect.width));
+                      const time = (x / rect.width) * duration;
+                      const clamped = Math.max(0, Math.min(time, endTime - 1));
+                      setTrimRange(clamped, endTime);
+                      setCurrentTime(clamped);
+                    };
+                    const onUp = () => {
+                      window.removeEventListener('mousemove', onMove);
+                      window.removeEventListener('mouseup', onUp);
+                    };
+                    window.addEventListener('mousemove', onMove);
+                    window.addEventListener('mouseup', onUp);
+                  }}
+                  onTouchStart={(e) => {
+                    e.stopPropagation();
+                    const onMove = (ev: TouchEvent) => {
+                      if (!trackRef.current) return;
+                      const rect = trackRef.current.getBoundingClientRect();
+                      const x = Math.max(0, Math.min(ev.touches[0].clientX - rect.left, rect.width));
+                      const time = (x / rect.width) * duration;
+                      const clamped = Math.max(0, Math.min(time, endTime - 1));
+                      setTrimRange(clamped, endTime);
+                      setCurrentTime(clamped);
+                    };
+                    const onEnd = () => {
+                      window.removeEventListener('touchmove', onMove);
+                      window.removeEventListener('touchend', onEnd);
+                    };
+                    window.addEventListener('touchmove', onMove);
+                    window.addEventListener('touchend', onEnd);
+                  }}
+                >
                   <div className="w-0.5 h-4 bg-black/50 rounded-full" />
                 </div>
-                <div className="absolute top-0 bottom-0 -right-1.5 w-3 bg-[var(--primary)] rounded-full shadow-[0_0_15px_var(--primary)] cursor-ew-resize z-20 flex items-center justify-center">
+                {/* End Handle — draggable */}
+                <div 
+                  className="absolute top-0 bottom-0 -right-1.5 w-3 bg-[var(--primary)] rounded-full shadow-[0_0_15px_var(--primary)] cursor-ew-resize z-20 flex items-center justify-center"
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    const onMove = (ev: MouseEvent) => {
+                      if (!trackRef.current) return;
+                      const rect = trackRef.current.getBoundingClientRect();
+                      const x = Math.max(0, Math.min(ev.clientX - rect.left, rect.width));
+                      const time = (x / rect.width) * duration;
+                      const clamped = Math.max(startTime + 1, Math.min(time, duration));
+                      setTrimRange(startTime, clamped);
+                      setCurrentTime(clamped);
+                    };
+                    const onUp = () => {
+                      window.removeEventListener('mousemove', onMove);
+                      window.removeEventListener('mouseup', onUp);
+                    };
+                    window.addEventListener('mousemove', onMove);
+                    window.addEventListener('mouseup', onUp);
+                  }}
+                  onTouchStart={(e) => {
+                    e.stopPropagation();
+                    const onMove = (ev: TouchEvent) => {
+                      if (!trackRef.current) return;
+                      const rect = trackRef.current.getBoundingClientRect();
+                      const x = Math.max(0, Math.min(ev.touches[0].clientX - rect.left, rect.width));
+                      const time = (x / rect.width) * duration;
+                      const clamped = Math.max(startTime + 1, Math.min(time, duration));
+                      setTrimRange(startTime, clamped);
+                      setCurrentTime(clamped);
+                    };
+                    const onEnd = () => {
+                      window.removeEventListener('touchmove', onMove);
+                      window.removeEventListener('touchend', onEnd);
+                    };
+                    window.addEventListener('touchmove', onMove);
+                    window.addEventListener('touchend', onEnd);
+                  }}
+                >
                   <div className="w-0.5 h-4 bg-black/50 rounded-full" />
                 </div>
               </div>

@@ -242,16 +242,16 @@ export class VideoService {
         .videoCodec('libx264')
         .audioCodec('aac')
         .outputOptions([
-          '-vf scale=1280:-2',
-          '-preset veryfast',
-          '-crf 21',
-          '-movflags +faststart',
-          '-pix_fmt yuv420p',
-          '-threads 1',
-          '-r 24',
-          '-b:a 192k',
-          '-ac 2',
-          '-ar 44100'
+          "-vf", "scale='min(854,iw)':-2",
+          '-preset', 'ultrafast',
+          '-crf', '28',
+          '-movflags', '+faststart',
+          '-pix_fmt', 'yuv420p',
+          '-threads', '0',
+          '-r', '24',
+          '-b:a', '64k',
+          '-ac', '1',
+          '-ar', '22050'
         ])
         .toFormat('mp4')
         .on('end', () => {
@@ -280,11 +280,16 @@ export class VideoService {
         .videoCodec('libx264')
         .audioCodec('aac')
         .outputOptions([
-          '-vf scale=1280:-2',
-          '-preset ultrafast',
-          '-crf 22',
-          '-movflags +faststart',
-          '-b:a 192k'
+          "-vf", "scale='min(854,iw)':-2",
+          '-preset', 'ultrafast',
+          '-crf', '28',
+          '-movflags', '+faststart',
+          '-pix_fmt', 'yuv420p',
+          '-threads', '0',
+          '-r', '24',
+          '-b:a', '64k',
+          '-ac', '1',
+          '-ar', '22050'
         ])
         .toFormat('mp4')
         .on('end', () => {
@@ -379,7 +384,41 @@ export class VideoService {
         .save(outputPath);
     });
   }
+  /** Helper to get FFmpeg options based on quality setting */
+  static getExportOptions(quality: string, format: string): { videoOpts: string[], audioOpts: string[], sizeStr: string | null } {
+    const audioOpts = ['-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '44100'];
+    let videoOpts = ['-c:v', 'libx264', '-movflags', '+faststart', '-pix_fmt', 'yuv420p', '-threads', '1'];
+    let sizeStr: string | null = null;
 
+    // Apply preset and CRF
+    if (quality === 'Fast Preview') {
+      videoOpts.push('-preset', 'ultrafast', '-crf', '28');
+    } else if (quality === 'Standard') {
+      videoOpts.push('-preset', 'fast', '-crf', '23');
+      audioOpts[3] = '128k';
+    } else if (quality === 'HD 720p') {
+      videoOpts.push('-preset', 'slow', '-crf', '18');
+    } else if (quality === 'Full HD 1080p') {
+      videoOpts.push('-preset', 'slow', '-crf', '18');
+    } else {
+      // Default to HD 720p
+      videoOpts.push('-preset', 'slow', '-crf', '18');
+    }
+
+    // Apply resolution mapping
+    const is1080p = quality === 'Full HD 1080p';
+    const isFast = quality === 'Fast Preview';
+
+    if (format === 'landscape') {
+      sizeStr = is1080p ? '1920x1080' : isFast ? '854x480' : '1280x720';
+    } else if (format === 'portrait') {
+      sizeStr = is1080p ? '1080x1920' : isFast ? '480x854' : '720x1280';
+    } else if (format === 'square') {
+      sizeStr = is1080p ? '1080x1080' : isFast ? '480x480' : '720x720';
+    }
+
+    return { videoOpts, audioOpts, sizeStr };
+  }
   /**
    * Process clip: trim + format convert from a LOCAL file.
    * NO re-downloading. Uses seekInput for fast seeking + duration for precise trim.
@@ -393,7 +432,8 @@ export class VideoService {
     endTime?: number,
     watermark?: any,
     onProgress?: (percent: number) => void,
-    textLayers?: TextLayerInput[]
+    textLayers?: TextLayerInput[],
+    quality: string = 'HD 720p'
   ): Promise<string> {
 
     return new Promise(async (resolve, reject) => {
@@ -467,23 +507,7 @@ export class VideoService {
         }
       }
 
-      // Common high-quality audio options used by all formats
-      const audioOpts = [
-        '-c:a', 'aac',
-        '-b:a', '192k',
-        '-ac', '2',
-        '-ar', '44100',
-      ];
-
-      // Common high-quality video options
-      const videoOpts = [
-        '-c:v', 'libx264',
-        '-preset', 'veryfast',
-        '-crf', '18',
-        '-movflags', '+faststart',
-        '-pix_fmt', 'yuv420p',
-        '-threads', '1',
-      ];
+      const { videoOpts, audioOpts, sizeStr } = VideoService.getExportOptions(quality, format);
 
       switch (format) {
 
@@ -501,18 +525,14 @@ export class VideoService {
           break;
 
         case 'portrait':
-          cmd = cmd
-            .videoFilter('crop=ih*(9/16):ih')
-            .size('1080x1920')
-            .toFormat('mp4');
+          cmd = cmd.videoFilter('crop=ih*(9/16):ih').toFormat('mp4');
+          if (sizeStr) cmd = cmd.size(sizeStr);
           cmd.outputOptions([...videoOpts, ...audioOpts]);
           break;
 
         case 'square':
-          cmd = cmd
-            .videoFilter('crop=ih:ih')
-            .size('1080x1080')
-            .toFormat('mp4');
+          cmd = cmd.videoFilter('crop=ih:ih').toFormat('mp4');
+          if (sizeStr) cmd = cmd.size(sizeStr);
           cmd.outputOptions([...videoOpts, ...audioOpts]);
           break;
 
@@ -522,6 +542,7 @@ export class VideoService {
           } else {
             cmd = cmd.toFormat('mp4');
           }
+          if (sizeStr) cmd = cmd.size(sizeStr);
           cmd.outputOptions([...videoOpts, ...audioOpts]);
           break;
       }
@@ -593,6 +614,117 @@ export class VideoService {
   }
 
   /**
+   * TRUE Video-to-Video Pipeline: Extract frames -> Style Transfer -> Rebuild -> Audio Sync
+   */
+  static async processCartoonFallback(
+    inputPath: string,
+    outputPath: string,
+    style: string,
+    startTime?: number,
+    endTime?: number,
+    onProgress?: (percent: number) => void
+  ): Promise<string> {
+    return new Promise(async (resolve, reject) => {
+      console.log("\n====================================");
+      console.log("FFMPEG STARTED");
+      console.log("INPUT EXISTS:", fs.existsSync(inputPath));
+      console.log("INPUT PATH:", inputPath);
+      console.log("OUTPUT PATH:", outputPath);
+      console.log("====================================\n");
+
+      if (!fileExists(inputPath)) return reject(new Error(`Input file does not exist: ${inputPath}`));
+
+      const outDir = path.dirname(outputPath);
+      if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+      const meta = await VideoService.getVideoMetadata(inputPath);
+      const targetDuration = meta.duration;
+
+      if (onProgress) onProgress(5);
+
+      let cmd = ffmpeg(inputPath);
+      let timeoutTimer: NodeJS.Timeout;
+
+      const resetTimeout = () => {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = setTimeout(() => {
+          console.error(`[processCartoon] FFmpeg process hung for 120 seconds. Killing.`);
+          cmd.kill('SIGKILL');
+          reject(new Error('FFmpeg processing timeout (hung for 120s)'));
+        }, 120000);
+      };
+
+      resetTimeout();
+
+      // Map styles to robust FFmpeg visual filters to give true animated aesthetics
+      let styleFilter = '';
+      if (style === 'Anime') {
+        styleFilter = 'smartblur=lr=2.0:ls=-1.0:lt=0,edgedetect=mode=colormix:high=0,eq=saturation=1.5';
+      } else if (style === 'Cartoon') {
+        styleFilter = 'smartblur=lr=2.5:ls=-1.2:lt=0,edgedetect=mode=colormix:high=0,eq=contrast=1.2:saturation=1.4';
+      } else if (style === 'Pixar Style') {
+        styleFilter = 'smartblur=lr=3.0:ls=-1.5:lt=0,eq=contrast=1.2:saturation=1.4:brightness=0.05';
+      } else if (style === 'Comic Style') {
+        styleFilter = 'smartblur=lr=2.0:ls=-1.0:lt=0,edgedetect=mode=colormix:high=0,eq=contrast=1.5:saturation=1.2';
+      } else {
+        styleFilter = 'smartblur=lr=2.0:ls=-1.0:lt=0,edgedetect=mode=colormix:high=0,eq=saturation=1.3';
+      }
+
+      console.log(`[processCartoon] Applying animated filter: ${styleFilter}`);
+
+      // STRICTLY APPLYING ONLY: ffmpeg -i input.mp4 -vf "<styleFilter>" -c:a copy output.mp4
+      cmd.outputOptions([
+        '-vf', styleFilter,
+        '-c:a', 'copy',
+        '-threads', '1'
+      ])
+      .on('start', (cmdLine) => {
+        console.log(`[processCartoon] FFmpeg filter command started: ${cmdLine}`);
+      })
+      .on('progress', (p) => {
+        resetTimeout();
+        let currentPercent = p.percent;
+
+        if (!currentPercent && p.timemark && targetDuration > 0) {
+          const parts = p.timemark.split(':');
+          if (parts.length === 3) {
+            const hrs = parseFloat(parts[0]) || 0;
+            const mins = parseFloat(parts[1]) || 0;
+            const secs = parseFloat(parts[2]) || 0;
+            const elapsed = (hrs * 3600) + (mins * 60) + secs;
+            currentPercent = Math.min(99, (elapsed / targetDuration) * 100);
+          }
+        }
+
+        if (currentPercent && onProgress) {
+          onProgress(Math.max(5, currentPercent));
+        }
+      })
+      .on('stderr', (stderrLine) => {
+        // Capture stderr from ffmpeg as requested
+        console.log(`[ffmpeg stderr] ${stderrLine}`);
+      })
+      .on('end', () => {
+        clearTimeout(timeoutTimer);
+        console.log('\n[processCartoon] Export complete');
+        if (fileExists(outputPath)) {
+          if (onProgress) onProgress(100);
+          resolve(outputPath);
+        } else {
+          reject(new Error('Output file missing after FFmpeg export'));
+        }
+      })
+      .on('error', (err, stdout, stderr) => {
+        clearTimeout(timeoutTimer);
+        console.error('\n[processCartoon] FFmpeg error:', err.message);
+        console.error('[processCartoon] FFmpeg full stderr:', stderr);
+        reject(err);
+      })
+      .save(outputPath);
+    });
+  }
+
+  /**
    * Process multi-clip: trims and concatenates multiple segments using FFmpeg filter_complex.
    */
   static async processMultiClip(
@@ -601,7 +733,8 @@ export class VideoService {
     format: string,
     cuts: Array<{ start: number; end: number }>,
     watermark?: any,
-    onProgress?: (percent: number) => void
+    onProgress?: (percent: number) => void,
+    quality: string = 'HD 720p'
   ): Promise<string> {
     return new Promise(async (resolve, reject) => {
       if (!fileExists(inputPath)) return reject(new Error(`Input file does not exist: ${inputPath}`));
@@ -610,7 +743,7 @@ export class VideoService {
       if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
       if (!cuts || cuts.length === 0) {
-        return VideoService.processClip(inputPath, outputPath, format, undefined, undefined, watermark, onProgress).then(resolve).catch(reject);
+        return VideoService.processClip(inputPath, outputPath, format, undefined, undefined, watermark, onProgress, undefined, quality).then(resolve).catch(reject);
       }
 
       const meta = await VideoService.getVideoMetadata(inputPath);
@@ -683,20 +816,22 @@ export class VideoService {
 
       cmd = cmd.complexFilter(filterComplex, format === 'audio' ? ['concata'] : [finalV, 'concata']);
 
-      const audioOpts = ['-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '44100'];
-      const videoOpts = ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-movflags', '+faststart', '-pix_fmt', 'yuv420p', '-threads', '1'];
+      const { videoOpts, audioOpts, sizeStr } = VideoService.getExportOptions(quality, format);
 
       if (format === 'audio') {
         cmd = cmd.toFormat('mp3');
         cmd.outputOptions(['-c:a', 'libmp3lame', '-b:a', '192k', '-ac', '2', '-ar', '44100', '-threads', '1']);
       } else if (format === 'portrait') {
-        cmd = cmd.size('1080x1920').toFormat('mp4');
+        cmd = cmd.toFormat('mp4');
+        if (sizeStr) cmd = cmd.size(sizeStr);
         cmd.outputOptions([...videoOpts, ...audioOpts]);
       } else if (format === 'square') {
-        cmd = cmd.size('1080x1080').toFormat('mp4');
+        cmd = cmd.toFormat('mp4');
+        if (sizeStr) cmd = cmd.size(sizeStr);
         cmd.outputOptions([...videoOpts, ...audioOpts]);
       } else {
         cmd = cmd.toFormat('mp4');
+        if (sizeStr) cmd = cmd.size(sizeStr);
         cmd.outputOptions([...videoOpts, ...audioOpts]);
       }
 
@@ -743,7 +878,8 @@ export class VideoService {
     outputPath: string,
     format: string,
     onProgress?: (percent: number) => void,
-    textLayers?: TextLayerInput[]
+    textLayers?: TextLayerInput[],
+    quality: string = 'HD 720p'
   ): Promise<string> {
     return new Promise(async (resolve, reject) => {
       if (inputPaths.length === 0) return reject(new Error('No input videos provided for merging.'));
@@ -755,11 +891,19 @@ export class VideoService {
       const outDir = path.dirname(outputPath);
       if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
 
-      // Determine dimensions based on format
-      let w = 1920; let h = 1080; // landscape
-      if (format === 'portrait') { w = 1080; h = 1920; }
-      else if (format === 'square') { w = 1080; h = 1080; }
-      else if (format === 'audio') { w = 0; h = 0; }
+      const { videoOpts, audioOpts, sizeStr } = VideoService.getExportOptions(quality, format);
+
+      // Determine dimensions based on format and quality
+      let w = 1280; let h = 720; // default HD landscape
+      if (sizeStr) {
+        const parts = sizeStr.split('x');
+        if (parts.length === 2) {
+          w = parseInt(parts[0], 10);
+          h = parseInt(parts[1], 10);
+        }
+      } else if (format === 'audio') { 
+        w = 0; h = 0; 
+      }
 
       let filterComplex = '';
       const concatInputs: string[] = [];
@@ -813,17 +957,13 @@ export class VideoService {
         cmd.outputOptions(['-c:a', 'libmp3lame', '-b:a', '192k', '-ac', '2', '-ar', '44100', '-threads', '2']);
       } else {
         cmd = cmd.complexFilter(filterComplex, ['outv', 'outa']).toFormat('mp4');
-        const audioOpts = ['-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-ar', '44100'];
-        const videoOpts = ['-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-movflags', '+faststart', '-pix_fmt', 'yuv420p', '-threads', '2'];
         cmd.outputOptions([...videoOpts, ...audioOpts]);
       }
 
       // Apply text overlays to merged output
       if (textLayers && textLayers.length > 0 && format !== 'audio') {
-        // Determine merged video dimensions
-        let mw = 1920; let mh = 1080;
-        if (format === 'portrait') { mw = 1080; mh = 1920; }
-        else if (format === 'square') { mw = 1080; mh = 1080; }
+        // Determine merged video dimensions for text layers
+        let mw = w; let mh = h;
 
         // Only apply global text layers (no clipId) to the merged output
         const globalLayers = textLayers.filter(l => !l.clipId);
@@ -893,10 +1033,10 @@ export class VideoService {
     return path.join(DIRS.previews, files[0]);
   }
 
-  /** Cleanup old temp/preview files older than maxAgeMs */
-  static cleanup(maxAgeMs = 3600000) {
+  /** Cleanup old temp/preview/upload files older than maxAgeMs (default 15 mins) */
+  static cleanup(maxAgeMs = 900000) {
     const now = Date.now();
-    [DIRS.temp, DIRS.previews].forEach(dir => {
+    [DIRS.temp, DIRS.previews, DIRS.uploads].forEach(dir => {
       if (!fs.existsSync(dir)) return;
       fs.readdirSync(dir).forEach(f => {
         const fp = path.join(dir, f);

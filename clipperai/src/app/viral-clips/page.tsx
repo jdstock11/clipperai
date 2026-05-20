@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeft, Scissors, Play, Pause, Download, Film,
   Monitor, Smartphone, Square, Music, Loader2, Zap,
-  Clock, HardDrive, Cpu, Volume2, CheckCircle2, Layers, Type
+  Clock, HardDrive, Cpu, Volume2, CheckCircle2, Layers, Type, Lock
 } from "lucide-react";
 import TextOverlayCanvas from "@/components/text-overlay/TextOverlayCanvas";
 import TextOverlayEditor from "@/components/text-overlay/TextOverlayEditor";
@@ -25,6 +25,13 @@ const FORMAT_OPTIONS = [
   { id: "portrait", label: "Portrait", sub: "9:16", icon: Smartphone },
   { id: "square", label: "Square", sub: "1:1", icon: Square },
   { id: "audio", label: "Audio", sub: "MP3", icon: Music },
+];
+
+const QUALITY_OPTIONS = [
+  "Fast Preview",
+  "Standard",
+  "HD 720p",
+  "Full HD 1080p",
 ];
 
 export default function Editor() {
@@ -52,6 +59,7 @@ export default function Editor() {
 
   // Export state
   const [exportFormat, setExportFormat] = useState("landscape");
+  const [exportQuality, setExportQuality] = useState("HD 720p");
   const [isExporting, setIsExporting] = useState(false);
   const [exportResult, setExportResult] = useState<string | null>(null);
 
@@ -68,7 +76,20 @@ export default function Editor() {
       const parsed = JSON.parse(data);
       setVideoData(parsed);
       setDuration(parsed.duration || 0);
-      setEndTime(parsed.duration || 0);
+      
+      if (parsed.startTime !== undefined) {
+        setStartTime(parsed.startTime);
+      }
+      
+      if (parsed.endTime !== undefined) {
+        setEndTime(parsed.endTime);
+      } else {
+        setEndTime(parsed.duration || 0);
+      }
+      
+      if (parsed.exportFormat) {
+        setExportFormat(parsed.exportFormat);
+      }
     } else {
       router.push("/");
     }
@@ -110,7 +131,16 @@ export default function Editor() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: videoData.url, duration: videoData.duration })
       });
-      const data = await res.json();
+      let data = await res.json();
+
+      if (data.status === 'processing') {
+        const previewId = data.previewId;
+        while (data.status === 'processing') {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          const statusRes = await fetch(`${BACKEND_API}/preview-status/${previewId}`);
+          data = await statusRes.json();
+        }
+      }
 
       if (data.status === 'ready') {
         setStreamUrl(data.streamUrl);
@@ -121,7 +151,14 @@ export default function Editor() {
           setMetadata(data.metadata);
           if (data.metadata.duration && data.metadata.duration > 0) {
             setDuration(data.metadata.duration);
-            setEndTime(data.metadata.duration);
+            
+            // Fix: Don't overwrite pre-loaded endTime from AI Analyzer
+            if (videoData?.endTime !== undefined) {
+              // Ensure it doesn't exceed actual duration
+              setEndTime(Math.min(videoData.endTime, data.metadata.duration));
+            } else {
+              setEndTime(data.metadata.duration);
+            }
           }
         }
         setPreviewReady(true);
@@ -142,13 +179,16 @@ export default function Editor() {
     try {
       const res = await fetch(`${BACKEND_API}/create-clip`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json"
+        },
         body: JSON.stringify({
           sourceUrl: videoData.url,
           streamUrl,
           startTime,
           endTime,
           format: exportFormat,
+          quality: exportQuality,
           textLayers: textLayers.length > 0 ? textLayers : undefined,
         }),
       });
@@ -156,7 +196,21 @@ export default function Editor() {
       const data = await res.json();
       if (data.fileUrl) {
         const filename = data.fileUrl.split('/').pop();
-        setExportResult(`${BACKEND_API}/download/${filename}`);
+        const downloadUrl = `${BACKEND_API}/download/${filename}`;
+        setExportResult(downloadUrl);
+        
+        // Auto trigger download for PC/Mobile
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = filename || 'clip.mp4';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        
+        // Cleanup
+        setTimeout(() => {
+          document.body.removeChild(a);
+        }, 100);
       } else {
         throw new Error(data.error || 'Export failed');
       }
@@ -508,6 +562,28 @@ export default function Editor() {
                   </button>
                 ))}
               </div>
+
+              {/* Quality Selection */}
+              <div className="mt-4">
+                <div className="text-xs font-bold text-white mb-2 flex items-center gap-2">
+                  <Zap className="w-3.5 h-3.5 text-yellow-400" /> Export Quality
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {QUALITY_OPTIONS.map(q => (
+                    <button
+                      key={q}
+                      onClick={() => setExportQuality(q)}
+                      className={`text-left px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                        exportQuality === q
+                          ? 'bg-[var(--primary)]/20 border-[var(--primary)] text-white font-bold'
+                          : 'bg-black/20 border-[var(--border)] text-[var(--muted)] hover:border-white/30 hover:text-white'
+                      }`}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             {/* Clip Info */}
@@ -519,8 +595,7 @@ export default function Editor() {
               <div className="flex items-center justify-between text-sm">
                 <span className="text-[var(--muted)]">Quality</span>
                 <span className="font-bold flex items-center gap-1.5">
-                  HD
-                  <span className="text-[9px] bg-[var(--primary-dim)] text-[var(--primary)] px-1.5 py-0.5 rounded font-bold tracking-wider">720p</span>
+                  {exportQuality}
                 </span>
               </div>
               {metadata && (
@@ -552,21 +627,27 @@ export default function Editor() {
 
             {/* Export result */}
             {exportResult && (
-              <div className="rounded-xl p-4 bg-emerald-950/20 border border-emerald-800/30 space-y-2">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                  <p className="text-emerald-400 text-sm font-bold">Export Complete!</p>
-                </div>
+              <div className="space-y-2 mt-4">
                 <a
                   href={exportResult}
                   download
-                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg border border-emerald-800/30 bg-emerald-950/20 text-emerald-300 text-sm font-bold hover:bg-emerald-900/30 transition-colors"
+                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 text-sm font-bold hover:bg-emerald-500/20 transition-colors shadow-[0_0_15px_rgba(16,185,129,0.15)]"
                 >
-                  <Download className="w-4 h-4" />
-                  💾 Save File
+                  <Download className="w-4 h-4" /> Download to Device
                 </a>
+                <p className="text-[10px] text-center text-emerald-500/80 font-medium">
+                  <CheckCircle2 className="w-3 h-3 inline mr-1" /> Render completed successfully
+                </p>
               </div>
             )}
+
+            {/* Privacy Message */}
+            <div className="pt-2">
+              <p className="text-[9px] text-center text-[var(--muted)]/70 px-2 leading-relaxed">
+                <Lock className="w-3 h-3 inline mr-1 mb-0.5" />
+                Your videos are processed securely and are <strong className="text-white/60 font-medium">never permanently stored</strong> on our servers.
+              </p>
+            </div>
             </>
             )}
           </div>

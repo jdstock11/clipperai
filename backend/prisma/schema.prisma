@@ -1,6 +1,6 @@
 datasource db {
-  provider = "sqlite"
-  url      = "file:./dev.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 generator client {
@@ -19,6 +19,9 @@ model User {
   payments         Payment[]       @relation("UserPayments")
   exportHistory    ExportHistory[] @relation("UserExportHistory")
   adminLogs        AdminLog[]      @relation("UserAdminLogs")
+  apiKeys          ApiKey[]        @relation("UserApiKeys")
+  notifications    Notification[]  @relation("UserNotifications")
+  loginLogs        LoginLog[]      @relation("UserLoginLogs")
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @updatedAt
   plan             String          @default("FREE")
@@ -28,6 +31,7 @@ model User {
   totalExportsUsed Int             @default(0)
   lastLogin        DateTime?
   planExpiryDate   DateTime?
+  status           String          @default("ACTIVE")
 
   @@index([email])
   @@map("users")
@@ -138,4 +142,55 @@ model AdminLog {
 
   @@index([userId])
   @@map("admin_logs")
+}
+
+model ApiKey {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation("UserApiKeys", fields: [userId], references: [id], onDelete: Cascade)
+  key       String   @unique
+  name      String
+  status    String   @default("ACTIVE") // ACTIVE, REVOKED
+  usage     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@map("api_keys")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation("UserNotifications", fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  type      String   // SYSTEM, PROMO, ALERT
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("notifications")
+}
+
+model Setting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model LoginLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation("UserLoginLogs", fields: [userId], references: [id], onDelete: Cascade)
+  ipAddress String?
+  userAgent String?
+  status    String   // SUCCESS, FAILED
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("login_logs")
 }

@@ -6,7 +6,7 @@ import { useMergeStore, MergeClip } from "@/store/useMergeStore";
 import { useDropzone } from "react-dropzone";
 import {
   ArrowLeft, Film, Monitor, Smartphone, Square, 
-  Loader2, Zap, Download, Play, Pause, X, GripVertical, Plus, CheckCircle2, Layers, Type
+  Loader2, Zap, Download, Play, Pause, X, GripVertical, Plus, CheckCircle2, Layers, Type, Lock
 } from "lucide-react";
 import TextOverlayCanvas from "@/components/text-overlay/TextOverlayCanvas";
 import TextOverlayEditor from "@/components/text-overlay/TextOverlayEditor";
@@ -20,6 +20,13 @@ const FORMAT_OPTIONS = [
   { id: "square", label: "Square", sub: "1:1", icon: Square },
 ];
 
+const QUALITY_OPTIONS = [
+  "Fast Preview",
+  "Standard",
+  "HD 720p",
+  "Full HD 1080p",
+];
+
 export default function MergeStudio() {
   const router = useRouter();
   
@@ -29,6 +36,7 @@ export default function MergeStudio() {
   } = useMergeStore();
 
   const [mounted, setMounted] = useState(false);
+  const [exportQuality, setExportQuality] = useState("HD 720p");
   const [isExporting, setIsExporting] = useState(false);
   const [exportResult, setExportResult] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState(0);
@@ -168,12 +176,17 @@ export default function MergeStudio() {
       setLoadingMessage("Initiating Merge...");
 
       // 2. Call merge API
+      const token = localStorage.getItem('userToken');
       const res = await fetch(`${BACKEND_API}/merge-video`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
         body: JSON.stringify({
           urls: uploadedUrls,
           format: exportFormat,
+          quality: exportQuality,
           textLayers: textLayers.length > 0 ? textLayers : undefined,
         }),
       });
@@ -354,6 +367,28 @@ export default function MergeStudio() {
                   </button>
                 ))}
               </div>
+
+              {/* Quality Selection */}
+              <div className="mt-4">
+                <div className="text-xs font-bold text-white mb-2 flex items-center gap-2">
+                  <Zap className="w-3.5 h-3.5 text-emerald-400" /> Export Quality
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {QUALITY_OPTIONS.map(q => (
+                    <button
+                      key={q}
+                      onClick={() => setExportQuality(q)}
+                      className={`text-left px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                        exportQuality === q
+                          ? 'bg-emerald-500/20 border-emerald-500 text-white font-bold'
+                          : 'bg-black/20 border-[var(--border)] text-[var(--muted)] hover:border-white/30 hover:text-white'
+                      }`}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             {/* Export Summary */}
@@ -381,10 +416,17 @@ export default function MergeStudio() {
                     <span>Processing...</span>
                   </>
                 ) : isExporting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>{loadingMessage || `Merging... ${exportProgress}%`}</span>
-                  </>
+                  exportProgress === 100 ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Preparing Download...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>{loadingMessage || `Merging... ${exportProgress}%`}</span>
+                    </>
+                  )
                 ) : (
                   <>
                     <Download className="w-4 h-4" />
@@ -403,14 +445,27 @@ export default function MergeStudio() {
               )}
 
               {exportResult && (
-                <a
-                  href={exportResult}
-                  download
-                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 text-sm font-bold hover:bg-emerald-500/20 transition-colors shadow-[0_0_15px_rgba(16,185,129,0.15)]"
-                >
-                  <CheckCircle2 className="w-4 h-4" /> Save Merged Video
-                </a>
+                <div className="space-y-2">
+                  <a
+                    href={exportResult}
+                    download
+                    className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 text-sm font-bold hover:bg-emerald-500/20 transition-colors shadow-[0_0_15px_rgba(16,185,129,0.15)]"
+                  >
+                    <Download className="w-4 h-4" /> Download to Device
+                  </a>
+                  <p className="text-[10px] text-center text-emerald-500/80 font-medium">
+                    <CheckCircle2 className="w-3 h-3 inline mr-1" /> Render completed successfully
+                  </p>
+                </div>
               )}
+
+              {/* Privacy Message */}
+              <div className="pt-2">
+                <p className="text-[9px] text-center text-[var(--muted)]/70 px-2 leading-relaxed">
+                  <Lock className="w-3 h-3 inline mr-1 mb-0.5" />
+                  Your videos are processed securely and are <strong className="text-white/60 font-medium">never permanently stored</strong> on our servers.
+                </p>
+              </div>
             </div>
             
             {clips.length < 2 && clips.length > 0 && (

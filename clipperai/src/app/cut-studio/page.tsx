@@ -6,9 +6,10 @@ import { useEditorStore } from "@/store/editorStore";
 import Timeline from "@/components/cut-studio/Timeline";
 import Toolbar from "@/components/cut-studio/Toolbar";
 import ManualTimeRemove from "@/components/cut-studio/ManualTimeRemove";
+import TrimTimeInputs from "@/components/cut-studio/TrimTimeInputs";
 import {
   ArrowLeft, Film, Monitor, Smartphone, Square, Music, 
-  Loader2, Zap, Clock, Cpu, Volume2, CheckCircle2, Layers, Download, Play, Pause
+  Loader2, Zap, Clock, Cpu, Volume2, CheckCircle2, Layers, Download, Play, Pause, Lock
 } from "lucide-react";
 
 const BACKEND_API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
@@ -25,6 +26,13 @@ const FORMAT_OPTIONS = [
   { id: "portrait", label: "Portrait", sub: "9:16", icon: Smartphone },
   { id: "square", label: "Square", sub: "1:1", icon: Square },
   { id: "audio", label: "Audio", sub: "MP3", icon: Music },
+];
+
+const QUALITY_OPTIONS = [
+  "Fast Preview",
+  "Standard",
+  "HD 720p",
+  "Full HD 1080p",
 ];
 
 export default function Editor() {
@@ -48,6 +56,7 @@ export default function Editor() {
 
   // Export & Queue state
   const [exportFormat, setExportFormat] = useState("landscape");
+  const [exportQuality, setExportQuality] = useState("HD 720p");
   const [isExporting, setIsExporting] = useState(false);
   const [exportResult, setExportResult] = useState<string | null>(null);
   const [exportProgress, setExportProgress] = useState(0);
@@ -120,7 +129,16 @@ export default function Editor() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: videoData.url, duration: videoData.duration })
       });
-      const data = await res.json();
+      let data = await res.json();
+
+      if (data.status === 'processing') {
+        const previewId = data.previewId;
+        while (data.status === 'processing') {
+          await new Promise(resolve => setTimeout(resolve, 2000)); // poll every 2s
+          const statusRes = await fetch(`${BACKEND_API}/preview-status/${previewId}`);
+          data = await statusRes.json();
+        }
+      }
 
       if (data.status === 'ready') {
         setStreamUrl(data.streamUrl);
@@ -196,9 +214,19 @@ export default function Editor() {
     const cuts = mode === 'trim' ? [{ start: startTime, end: endTime }] : calculateKeeps();
 
     try {
+      const token = localStorage.getItem('userToken');
+      if (!token) {
+        alert('Please log in to export clips.');
+        router.push('/login');
+        setIsExporting(false);
+        return;
+      }
       const res = await fetch(`${BACKEND_API}/cut-video`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}` 
+        },
         body: JSON.stringify({
           sourceUrl: videoData.url,
           streamUrl,
@@ -207,8 +235,17 @@ export default function Editor() {
           cuts: (mode === 'remove' || mode === 'multi') ? cuts : undefined,
           watermark: watermark.enabled ? watermark : undefined,
           format: exportFormat,
+          quality: exportQuality,
         }),
       });
+
+      if (res.status === 401) {
+        localStorage.removeItem('userToken');
+        alert('Session expired. Please log in again.');
+        router.push('/login');
+        setIsExporting(false);
+        return;
+      }
 
       const data = await res.json();
       if (data.jobId) {
@@ -392,6 +429,9 @@ export default function Editor() {
             </div>
           </div>
 
+          {/* Trim Time Inputs */}
+          {previewReady && mode === 'trim' && <TrimTimeInputs />}
+
           {/* Manual Time Remove */}
           {previewReady && (mode === 'remove' || mode === 'multi') && <ManualTimeRemove />}
 
@@ -451,6 +491,28 @@ export default function Editor() {
                   </button>
                 ))}
               </div>
+
+              {/* Quality Selection */}
+              <div className="mt-4">
+                <div className="text-xs font-bold text-white mb-2 flex items-center gap-2">
+                  <Zap className="w-3.5 h-3.5 text-yellow-400" /> Export Quality
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {QUALITY_OPTIONS.map(q => (
+                    <button
+                      key={q}
+                      onClick={() => setExportQuality(q)}
+                      className={`text-left px-3 py-2 rounded-lg border text-xs font-medium transition-colors ${
+                        exportQuality === q
+                          ? 'bg-[var(--primary)]/20 border-[var(--primary)] text-white font-bold'
+                          : 'bg-black/20 border-[var(--border)] text-[var(--muted)] hover:border-white/30 hover:text-white'
+                      }`}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             {/* Export Summary */}
@@ -479,10 +541,17 @@ export default function Editor() {
                 className="w-full btn-glow py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 text-sm transition-all"
               >
                 {isExporting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Rendering... {exportProgress}%</span>
-                  </>
+                  exportProgress === 100 ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Preparing Download...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Rendering... {exportProgress}%</span>
+                    </>
+                  )
                 ) : (
                   <>
                     <Download className="w-4 h-4" />
@@ -501,14 +570,27 @@ export default function Editor() {
               )}
 
               {exportResult && (
-                <a
-                  href={exportResult}
-                  download
-                  className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 text-sm font-bold hover:bg-emerald-500/20 transition-colors shadow-[0_0_15px_rgba(16,185,129,0.15)]"
-                >
-                  <CheckCircle2 className="w-4 h-4" /> Save Final Video
-                </a>
+                <div className="space-y-2">
+                  <a
+                    href={exportResult}
+                    download
+                    className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-emerald-500/50 bg-emerald-500/10 text-emerald-400 text-sm font-bold hover:bg-emerald-500/20 transition-colors shadow-[0_0_15px_rgba(16,185,129,0.15)]"
+                  >
+                    <Download className="w-4 h-4" /> Download to Device
+                  </a>
+                  <p className="text-[10px] text-center text-emerald-500/80 font-medium">
+                    <CheckCircle2 className="w-3 h-3 inline mr-1" /> Render completed successfully
+                  </p>
+                </div>
               )}
+
+              {/* Privacy Message */}
+              <div className="pt-2">
+                <p className="text-[9px] text-center text-[var(--muted)]/70 px-2 leading-relaxed">
+                  <Lock className="w-3 h-3 inline mr-1 mb-0.5" />
+                  Your videos are processed securely and are <strong className="text-white/60 font-medium">never permanently stored</strong> on our servers.
+                </p>
+              </div>
             </div>
           </div>
         </aside>
