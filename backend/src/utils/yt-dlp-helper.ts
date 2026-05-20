@@ -16,6 +16,31 @@ export let ytDlpPath = fs.existsSync(localYtDlpPath) ? localYtDlpPath : fallback
 
 let ytDlpWrap: YTDlpWrap | null = null;
 
+import https from 'https';
+
+// Custom direct download to bypass GitHub API rate limiting on Render/Railway
+async function downloadDirectly(url: string, dest: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(dest);
+    https.get(url, (response) => {
+      if (response.statusCode === 301 || response.statusCode === 302) {
+        return downloadDirectly(response.headers.location as string, dest).then(resolve).catch(reject);
+      }
+      if (response.statusCode !== 200) {
+        reject(new Error(`Failed to download: ${response.statusCode}`));
+        return;
+      }
+      response.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        resolve();
+      });
+    }).on('error', (err) => {
+      fs.unlink(dest, () => reject(err));
+    });
+  });
+}
+
 // Step 2 & 10: Download yt-dlp dynamically with fallback
 export async function ensureYtDlpExists(forceDownload = false): Promise<void> {
   console.log("[yt-dlp] Checking binary at:", ytDlpPath);
@@ -28,10 +53,13 @@ export async function ensureYtDlpExists(forceDownload = false): Promise<void> {
     return;
   }
 
-  console.log("[yt-dlp] Downloading yt-dlp...");
+  console.log("[yt-dlp] Downloading yt-dlp directly from release...");
   try {
-    // downloadFromGithub defaults to Linux if not windows
-    await YTDlpWrap.downloadFromGithub(ytDlpPath);
+    const releaseUrl = isWin 
+      ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' 
+      : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+    
+    await downloadDirectly(releaseUrl, ytDlpPath);
     console.log("[yt-dlp] Downloaded successfully to:", ytDlpPath);
     if (!isWin) {
       // Step 4: Add executable permission
