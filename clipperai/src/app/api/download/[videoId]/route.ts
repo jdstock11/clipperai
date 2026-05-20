@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
 
-export async function GET(request: Request, { params }: { params: { videoId: string } }) {
+export async function GET(request: Request, { params }: { params: Promise<{ videoId: string }> }) {
   try {
+    const { videoId } = await params;
     // Mock backend streaming download:
-    // In production, we'd locate the file: /temp/renders/{params.videoId}.mp4
+    // In production, we'd locate the file: /temp/renders/{videoId}.mp4
     // And stream it to the client.
     
     // For this mockup, we will fetch a stable dummy video and pipe it to the response
@@ -18,7 +19,7 @@ export async function GET(request: Request, { params }: { params: { videoId: str
       status: 200,
       headers: {
         'Content-Type': 'video/mp4',
-        'Content-Disposition': `attachment; filename="clipforge-export-${params.videoId}.mp4"`,
+        'Content-Disposition': `attachment; filename="clipforge-export-${videoId}.mp4"`,
       },
     });
   } catch (err) {
