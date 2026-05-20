@@ -6,7 +6,13 @@ import os from 'os';
 const isWin = process.platform === 'win32';
 // Step 7: Use safe path resolution
 const tempDir = process.env.VERCEL || !isWin ? '/tmp' : os.tmpdir();
-const ytDlpPath = path.join(tempDir, isWin ? 'yt-dlp.exe' : 'yt-dlp');
+
+// First check if yt-dlp exists in the local backend directory
+const localYtDlpPath = path.join(__dirname, '../../yt-dlp' + (isWin ? '.exe' : ''));
+const fallbackYtDlpPath = path.join(tempDir, isWin ? 'yt-dlp.exe' : 'yt-dlp');
+
+// Use the local one if it exists, otherwise fall back to temp dir
+export let ytDlpPath = fs.existsSync(localYtDlpPath) ? localYtDlpPath : fallbackYtDlpPath;
 
 let ytDlpWrap: YTDlpWrap | null = null;
 

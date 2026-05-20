@@ -47,15 +47,8 @@ dotenv.config();
 
 // ── yt-dlp binary ────────────────────────────────────────────────────
 // Run dynamic initialization and updates on startup
-ensureYtDlpExists().then(async () => {
-  console.log('[yt-dlp] Checking for updates...');
-  try {
-    const yt = await getYtDlpWrap();
-    const output = await yt.execPromise(['-U']);
-    console.log('[yt-dlp] Update status:', output.trim());
-  } catch (e: any) {
-    console.error('[yt-dlp] Auto-update failed:', e.message);
-  }
+ensureYtDlpExists().then(() => {
+  console.log('[yt-dlp] Startup binary check complete.');
 }).catch(e => {
   console.error('[yt-dlp] Startup binary check failed:', e.message);
 });
