@@ -172,9 +172,51 @@ export default function Editor() {
     }
   };
 
+  const [exportProgress, setExportProgress] = useState(0);
+
+  const pollJobStatus = async (jobId: string) => {
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`${BACKEND_API}/jobs/${jobId}`);
+        const data = await res.json();
+        
+        if (data.status === 'PROCESSING') {
+          setExportProgress(data.progress || 10);
+        } else if (data.status === 'COMPLETED') {
+          clearInterval(interval);
+          setExportProgress(100);
+          const filename = data.result?.fileUrl?.split('/').pop();
+          const downloadUrl = `${BACKEND_API}/download/${filename}`;
+          setExportResult(downloadUrl);
+          
+          // Auto trigger download for PC/Mobile
+          const a = document.createElement('a');
+          a.href = downloadUrl;
+          a.download = filename || 'clip.mp4';
+          a.style.display = 'none';
+          document.body.appendChild(a);
+          a.click();
+          
+          // Cleanup
+          setTimeout(() => {
+            document.body.removeChild(a);
+          }, 100);
+          setIsExporting(false);
+        } else if (data.status === 'FAILED') {
+          clearInterval(interval);
+          setIsExporting(false);
+          alert('Export failed: ' + data.error);
+        }
+      } catch (err) {
+        console.error('Polling error', err);
+      }
+    }, 2000);
+  };
+
   const handleExport = async () => {
     setIsExporting(true);
     setExportResult(null);
+    setExportProgress(0);
 
     try {
       const res = await fetch(`${BACKEND_API}/create-clip`, {
@@ -194,29 +236,13 @@ export default function Editor() {
       });
 
       const data = await res.json();
-      if (data.fileUrl) {
-        const filename = data.fileUrl.split('/').pop();
-        const downloadUrl = `${BACKEND_API}/download/${filename}`;
-        setExportResult(downloadUrl);
-        
-        // Auto trigger download for PC/Mobile
-        const a = document.createElement('a');
-        a.href = downloadUrl;
-        a.download = filename || 'clip.mp4';
-        a.style.display = 'none';
-        document.body.appendChild(a);
-        a.click();
-        
-        // Cleanup
-        setTimeout(() => {
-          document.body.removeChild(a);
-        }, 100);
+      if (data.jobId) {
+        pollJobStatus(data.jobId);
       } else {
         throw new Error(data.error || 'Export failed');
       }
     } catch (err: any) {
       alert("Export error: " + err.message);
-    } finally {
       setIsExporting(false);
     }
   };

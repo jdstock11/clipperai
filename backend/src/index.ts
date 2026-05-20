@@ -626,7 +626,7 @@ app.get('/api/cartoon-jobs/:id', (req, res) => {
   res.json(job);
 });
 
-// ── Create clip (Synchronous) for Viral Clips ─────────────────────────
+// ── Create clip (Asynchronous) for Viral Clips ─────────────────────────
 app.post('/api/create-clip', async (req: express.Request, res: express.Response) => {
   const { sourceUrl, streamUrl, startTime, endTime, format, textLayers, quality } = req.body;
   if (!sourceUrl || startTime === undefined || endTime === undefined) {
@@ -636,53 +636,89 @@ app.post('/api/create-clip', async (req: express.Request, res: express.Response)
   const clipId = `clip_${Date.now()}`;
   const ext = format === 'audio' ? 'mp3' : 'mp4';
   const outputFile = path.join(DIRS.uploads, `${clipId}.${ext}`);
+  const jobId = `job_clip_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
   try {
-    let inputFile = '';
-
-    if (streamUrl) {
-      const filename = path.basename(streamUrl);
-      const rawFilename = filename.replace('_encoded', '_raw');
-      const rawPath = path.join(DIRS.previews, rawFilename);
-      const encodedPath = path.join(DIRS.previews, filename);
-      
-      if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
-        inputFile = rawPath;
-        console.log(`[clip] Using high-quality source: ${rawFilename}`);
-      } else if (fs.existsSync(encodedPath) && fs.statSync(encodedPath).size > 0) {
-        inputFile = encodedPath;
+    const jobRecord = await prisma.job.create({
+      data: {
+        id: jobId,
+        type: 'RENDER_CLIP',
+        status: 'PROCESSING',
+        progress: 10,
+        data: JSON.stringify({ sourceUrl, streamUrl, startTime, endTime, format, quality })
       }
-    }
+    });
 
-    if (!inputFile) {
-      const existing = VideoService.findExistingPreview();
-      if (existing) inputFile = existing;
-    }
+    res.json({ jobId, clipId, status: 'PROCESSING' });
 
-    if (!inputFile) {
-      await VideoService.downloadPreview(sourceUrl, clipId);
-      const downloaded = VideoService.findExistingPreview();
-      if (downloaded) inputFile = downloaded;
-      else throw new Error('Could not obtain source video for export');
-    }
+    // Process asynchronously
+    (async () => {
+      try {
+        let inputFile = '';
 
-    await VideoService.processClip(inputFile, outputFile, format, startTime, endTime, undefined, undefined, textLayers, quality || 'HD 720p');
+        if (streamUrl) {
+          const filename = path.basename(streamUrl);
+          const rawFilename = filename.replace('_encoded', '_raw');
+          const rawPath = path.join(DIRS.previews, rawFilename);
+          const encodedPath = path.join(DIRS.previews, filename);
+          
+          if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
+            inputFile = rawPath;
+            console.log(`[clip] Using high-quality source: ${rawFilename}`);
+          } else if (fs.existsSync(encodedPath) && fs.statSync(encodedPath).size > 0) {
+            inputFile = encodedPath;
+          }
+        }
 
-    // Auto-cleanup temp file after 30 minutes if not downloaded
-    setTimeout(() => {
-      if (fs.existsSync(outputFile)) {
-        try { fs.unlinkSync(outputFile); } catch (e) {}
+        if (!inputFile) {
+          const existing = VideoService.findExistingPreview();
+          if (existing) inputFile = existing;
+        }
+
+        if (!inputFile) {
+          await VideoService.downloadPreview(sourceUrl, clipId);
+          const downloaded = VideoService.findExistingPreview();
+          if (downloaded) inputFile = downloaded;
+          else throw new Error('Could not obtain source video for export');
+        }
+
+        const onProgress = async (percent: number) => {
+          try {
+            await prisma.job.update({ where: { id: jobRecord.id }, data: { progress: Math.round(percent) } });
+          } catch { /* ignore */ }
+        };
+
+        await VideoService.processClip(inputFile, outputFile, format, startTime, endTime, undefined, onProgress, textLayers, quality || 'HD 720p');
+
+        // Auto-cleanup temp file after 30 minutes if not downloaded
+        setTimeout(() => {
+          if (fs.existsSync(outputFile)) {
+            try { fs.unlinkSync(outputFile); } catch (e) {}
+          }
+        }, 30 * 60 * 1000);
+
+        const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+        const host = req.headers.host;
+        const fileUrl = `${protocol}://${host}/uploads/${path.basename(outputFile)}`;
+        const downloadUrl = `${protocol}://${host}/api/download/${path.basename(outputFile)}`;
+        
+        await prisma.job.update({ 
+          where: { id: jobRecord.id }, 
+          data: { status: 'COMPLETED', progress: 100, result: JSON.stringify({ fileUrl, downloadUrl }) } 
+        });
+
+      } catch (err: any) {
+        console.error('[clip] Async error:', err.message);
+        await prisma.job.update({ 
+          where: { id: jobRecord.id }, 
+          data: { status: 'FAILED', error: err.message } 
+        }).catch(() => {});
       }
-    }, 30 * 60 * 1000);
+    })();
 
-    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-    const host = req.headers.host;
-    const fileUrl = `${protocol}://${host}/uploads/${path.basename(outputFile)}`;
-    const downloadUrl = `${protocol}://${host}/api/download/${path.basename(outputFile)}`;
-    res.json({ clipId, fileUrl, downloadUrl });
   } catch (error: any) {
-    console.error('[clip] Error:', error.message);
-    res.status(500).json({ error: 'Failed to create clip: ' + error.message });
+    console.error('[clip] Route error:', error.message);
+    res.status(500).json({ error: 'Failed to initiate clip creation: ' + error.message });
   }
 });
 

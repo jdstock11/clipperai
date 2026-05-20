@@ -32,8 +32,10 @@ async function downloadDirectly(url: string, dest: string): Promise<void> {
       }
       response.pipe(file);
       file.on('finish', () => {
-        file.close();
-        resolve();
+        file.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
       });
     }).on('error', (err) => {
       fs.unlink(dest, () => reject(err));
@@ -41,33 +43,45 @@ async function downloadDirectly(url: string, dest: string): Promise<void> {
   });
 }
 
+let downloadPromise: Promise<void> | null = null;
+
 // Step 2 & 10: Download yt-dlp dynamically with fallback
 export async function ensureYtDlpExists(forceDownload = false): Promise<void> {
-  console.log("[yt-dlp] Checking binary at:", ytDlpPath);
+  if (downloadPromise) return downloadPromise;
   
-  if (!forceDownload && fs.existsSync(ytDlpPath)) {
-    console.log("[yt-dlp] Binary exists.");
-    try {
-      if (!isWin) fs.chmodSync(ytDlpPath, 0o755);
-    } catch {}
-    return;
-  }
-
-  console.log("[yt-dlp] Downloading yt-dlp directly from release...");
-  try {
-    const releaseUrl = isWin 
-      ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' 
-      : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+  downloadPromise = (async () => {
+    console.log("[yt-dlp] Checking binary at:", ytDlpPath);
     
-    await downloadDirectly(releaseUrl, ytDlpPath);
-    console.log("[yt-dlp] Downloaded successfully to:", ytDlpPath);
-    if (!isWin) {
-      // Step 4: Add executable permission
-      fs.chmodSync(ytDlpPath, 0o755);
+    if (!forceDownload && fs.existsSync(ytDlpPath)) {
+      console.log("[yt-dlp] Binary exists.");
+      try {
+        if (!isWin) fs.chmodSync(ytDlpPath, 0o755);
+      } catch {}
+      return;
     }
-  } catch (error: any) {
-    console.error("[yt-dlp] Download failed:", error.message);
-    throw new Error("Failed to download yt-dlp binary");
+
+    console.log("[yt-dlp] Downloading yt-dlp directly from release...");
+    try {
+      const releaseUrl = isWin 
+        ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' 
+        : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+      
+      await downloadDirectly(releaseUrl, ytDlpPath);
+      console.log("[yt-dlp] Downloaded successfully to:", ytDlpPath);
+      if (!isWin) {
+        // Step 4: Add executable permission
+        fs.chmodSync(ytDlpPath, 0o755);
+      }
+    } catch (error: any) {
+      console.error("[yt-dlp] Download failed:", error.message);
+      throw new Error("Failed to download yt-dlp binary");
+    }
+  })();
+  
+  try {
+    await downloadPromise;
+  } finally {
+    downloadPromise = null;
   }
 }
 
