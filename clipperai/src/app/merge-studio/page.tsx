@@ -12,7 +12,7 @@ import TextOverlayCanvas from "@/components/text-overlay/TextOverlayCanvas";
 import TextOverlayEditor from "@/components/text-overlay/TextOverlayEditor";
 import { useTextOverlayStore } from "@/store/useTextOverlayStore";
 
-const BACKEND_API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
+const BACKEND_API = process.env.NEXT_PUBLIC_API_URL || '';
 
 const FORMAT_OPTIONS = [
   { id: "landscape", label: "Landscape", sub: "16:9", icon: Monitor },

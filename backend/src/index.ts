@@ -66,8 +66,18 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin) || origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+    // Allow localhost/127.0.0.1 dynamically
+    if (origin.startsWith('http://localhost') || origin.startsWith('http://127.0.0.1')) {
+      return callback(null, true);
+    }
+    // Allow Vercel preview URLs dynamically
+    if (origin.endsWith('.vercel.app')) {
+      return callback(null, true);
+    }
+    // Check specific allowed origins
+    if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
     return callback(new Error('Not allowed by CORS'));
@@ -90,6 +100,7 @@ io.on('connection', (socket) => {
 });
 
 const prisma = new PrismaClient();
+app.set('trust proxy', 1); // Trust first proxy (Render/Railway/Vercel)
 app.use(cors(corsOptions));
 app.use(express.json());
 
@@ -119,7 +130,10 @@ app.post('/api/upload-video', upload.single('video'), async (req, res) => {
     const metadata = await VideoService.getVideoMetadata(newPath);
 
     // We return a "fake" URL that the frontend can use to reference this local file
-    const streamUrl = `/api/stream/${path.basename(newPath)}`;
+    // Generate absolute path for streamUrl so frontend doesn't get mixed content
+    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    const host = req.headers.host;
+    const streamUrl = `${protocol}://${host}/api/stream/${path.basename(newPath)}`;
     res.json({
       url: `local://${newPath}`,
       streamUrl,
@@ -244,7 +258,10 @@ app.post('/api/prepare-preview', async (req, res) => {
 
       const metadata = await VideoService.getVideoMetadata(finalPath);
       const thumbnails = await VideoService.generateThumbnail(finalPath, previewId);
-      const streamUrl = `/api/stream/${path.basename(finalPath)}`;
+      // Generate absolute URL for stream
+      const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+      const host = req.headers.host;
+      const streamUrl = `${protocol}://${host}/api/stream/${path.basename(finalPath)}`;
 
       // Update cache with success
       previewStatusCache.set(previewId, {
@@ -399,7 +416,9 @@ app.post('/api/cut-video', verifyUser, async (req: AuthRequest, res: express.Res
         await VideoService.processClip(inputFile, outputFile, format, startTime, endTime, watermark, onProgress, undefined, quality || 'HD 720p');
       }
 
-      const fileUrl = `/uploads/${path.basename(outputFile)}`;
+      const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+      const host = req.headers.host;
+      const fileUrl = `${protocol}://${host}/uploads/${path.basename(outputFile)}`;
       await prisma.clip.update({ where: { id: clip.id }, data: { status: 'COMPLETED', fileUrl } });
       await prisma.job.update({ where: { id: jobRecord.id }, data: { status: 'COMPLETED', progress: 100, result: JSON.stringify({ fileUrl }) } });
 
@@ -486,7 +505,9 @@ app.post('/api/merge-video', verifyUser, async (req: AuthRequest, res: express.R
 
         await VideoService.mergeVideos(inputPaths, outputFile, format || 'landscape', onProgress, textLayers, quality || 'HD 720p');
 
-        const fileUrl = `/uploads/${path.basename(outputFile)}`;
+        const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+        const host = req.headers.host;
+        const fileUrl = `${protocol}://${host}/uploads/${path.basename(outputFile)}`;
         await prisma.job.update({ 
           where: { id: jobRecord.id }, 
           data: { status: 'COMPLETED', progress: 100, result: JSON.stringify({ fileUrl }) } 
@@ -578,8 +599,10 @@ app.post('/api/generate-cartoon', async (req: AuthRequest, res: express.Response
         // Call the AI frame-by-frame cartoon pipeline
         await CartoonService.processCartoonAI(inputFile, outputFile, style || 'Anime', startTime, endTime, onProgress);
 
-        const fileUrl = `/uploads/${path.basename(outputFile)}`;
-        const downloadUrl = `/api/download/${path.basename(outputFile)}`;
+        const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+        const host = req.headers.host;
+        const fileUrl = `${protocol}://${host}/uploads/${path.basename(outputFile)}`;
+        const downloadUrl = `${protocol}://${host}/api/download/${path.basename(outputFile)}`;
         const resultObj = { fileUrl, downloadUrl };
         updateJob({ status: 'COMPLETED', progress: 100, result: JSON.stringify(resultObj) });
 
@@ -652,8 +675,10 @@ app.post('/api/create-clip', async (req: express.Request, res: express.Response)
       }
     }, 30 * 60 * 1000);
 
-    const fileUrl = `/uploads/${path.basename(outputFile)}`;
-    const downloadUrl = `/api/download/${path.basename(outputFile)}`;
+    const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    const host = req.headers.host;
+    const fileUrl = `${protocol}://${host}/uploads/${path.basename(outputFile)}`;
+    const downloadUrl = `${protocol}://${host}/api/download/${path.basename(outputFile)}`;
     res.json({ clipId, fileUrl, downloadUrl });
   } catch (error: any) {
     console.error('[clip] Error:', error.message);

@@ -8,7 +8,7 @@ import {
   Flame, Laugh, Smile, ArrowRight
 } from "lucide-react";
 
-const BACKEND_API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
+const BACKEND_API = process.env.NEXT_PUBLIC_API_URL || '';
 
 function formatTime(s: number): string {
   if (!s || isNaN(s)) return "0:00";

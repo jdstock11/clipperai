@@ -76,13 +76,14 @@ const CLIENT_FALLBACKS = [
   'android',
   'web',
   'mweb',
-  'ios'
+  'ios',
+  'tv'
 ];
 
 export async function executeYtDlpWithRetry(
   baseArgs: string[],
   timeoutMs: number = 25000,
-  maxRetries: number = 2
+  maxRetries: number = 3 // Increased from 2 to 3
 ): Promise<string> {
   const yt = await getYtDlpWrap();
   const cookiesPath = setupCookies();
@@ -93,9 +94,11 @@ export async function executeYtDlpWithRetry(
     for (const client of CLIENT_FALLBACKS) {
       const args = [...baseArgs];
       
-      args.push('--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36');
+      // Use a very modern and common user agent
+      args.push('--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
       args.push('--add-header', 'Accept-Language:en-US,en;q=0.9');
-      args.push('--add-header', 'Referer:https://www.google.com/');
+      // Proper referer for YouTube
+      args.push('--add-header', 'Referer:https://www.youtube.com/');
       args.push('--no-check-certificates');
       args.push('--geo-bypass');
       
@@ -109,8 +112,11 @@ export async function executeYtDlpWithRetry(
         console.log(`[yt-dlp] Attempt ${attempt + 1}/${maxRetries + 1}, client: ${client}`);
         
         const fetchPromise = yt.execPromise(args);
+        // Increase timeout dynamically based on attempt if it's a fetch, but use the provided timeout
+        // (usually 300s for full downloads, 25s for fetch)
+        const currentTimeout = timeoutMs + (attempt * 5000); 
         const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('TIMEOUT')), timeoutMs)
+          setTimeout(() => reject(new Error('TIMEOUT')), currentTimeout)
         );
 
         const result = await Promise.race([fetchPromise, timeoutPromise]) as string;
@@ -140,7 +146,7 @@ export async function executeYtDlpWithRetry(
     }
     
     if (attempt < maxRetries) {
-      const backoff = Math.pow(2, attempt) * 2000; // 2s, 4s...
+      const backoff = Math.pow(2, attempt) * 3000; // 3s, 6s, 12s...
       console.log(`[yt-dlp] All clients failed. Waiting ${backoff}ms before next attempt block...`);
       await new Promise(resolve => setTimeout(resolve, backoff));
     }

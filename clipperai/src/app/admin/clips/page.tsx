@@ -15,7 +15,7 @@ export default function ClipsManagement() {
   useEffect(() => {
     const fetchClips = async () => {
       try {
-        const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
+        const API_URL = process.env.NEXT_PUBLIC_API_URL || '';
         const res = await fetch(`${API_URL}/admin/clips`, {
           headers: { 'Authorization': `Bearer ${localStorage.getItem('adminToken')}` }
         });

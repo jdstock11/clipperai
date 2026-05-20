@@ -10,7 +10,7 @@ export async function POST(request: Request) {
     }
 
     // Proxy request to Express backend running on Railway/Render/VPS
-    const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
+    const backendUrl = process.env.NEXT_PUBLIC_API_URL || '';
     
     const res = await fetch(`${backendUrl}/fetch-video`, {
       method: 'POST',

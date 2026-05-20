@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 export async function POST(request: Request) {
   try {
-    const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
+    const backendUrl = process.env.NEXT_PUBLIC_API_URL || '';
 
     // Forward the raw body + content-type header to preserve multipart boundaries
     const contentType = request.headers.get('content-type') || '';

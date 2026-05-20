@@ -7,7 +7,7 @@ import {
   Loader2, Zap, Play, Pause, Download, Type, Image as ImageIcon, Sparkles, Wand2, Layers, CheckCircle2, Lock
 } from "lucide-react";
 
-const BACKEND_API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
+const BACKEND_API = process.env.NEXT_PUBLIC_API_URL || '';
 
 const VISUAL_STYLES = [
   "Anime", "Cartoon", "Pixar Style", "Bollywood Anime", "Motion Comic",
@@ -120,7 +120,7 @@ export default function AICartoon() {
             setProgress(100);
             setIsGenerating(false);
             setResultReady(true);
-            const backendUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/api";
+            const backendUrl = process.env.NEXT_PUBLIC_API_URL || '';
             
             // Handle both string result and JSON object result formats
             let resultData = jobData.result;

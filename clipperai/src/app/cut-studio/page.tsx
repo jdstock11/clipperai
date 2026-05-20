@@ -12,7 +12,7 @@ import {
   Loader2, Zap, Clock, Cpu, Volume2, CheckCircle2, Layers, Download, Play, Pause, Lock
 } from "lucide-react";
 
-const BACKEND_API = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api';
+const BACKEND_API = process.env.NEXT_PUBLIC_API_URL || '';
 
 function formatTime(s: number): string {
   if (!s || isNaN(s)) return "0:00";
