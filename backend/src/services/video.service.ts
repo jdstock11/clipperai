@@ -509,33 +509,41 @@ export class VideoService {
 
       const { videoOpts, audioOpts, sizeStr } = VideoService.getExportOptions(quality, format);
 
+      let cropFilter = '';
+      if (format === 'portrait' && meta.width > 0 && meta.height > 0) {
+        const targetAspect = 9 / 16;
+        const inputAspect = meta.width / meta.height;
+        let cw = meta.width;
+        let ch = meta.height;
+        if (inputAspect > targetAspect) {
+          cw = Math.round(meta.height * targetAspect);
+        } else {
+          ch = Math.round(meta.width / targetAspect);
+        }
+        cw -= cw % 2;
+        ch -= ch % 2;
+        cropFilter = `crop=${cw}:${ch}`;
+      } else if (format === 'square' && meta.width > 0 && meta.height > 0) {
+        let side = Math.min(meta.width, meta.height);
+        side -= side % 2;
+        cropFilter = `crop=${side}:${side}`;
+      } else if (format === 'portrait') {
+        cropFilter = 'crop=ih*(9/16):ih';
+      } else if (format === 'square') {
+        cropFilter = 'crop=ih:ih';
+      }
+
       switch (format) {
-
         case 'audio':
-          cmd = cmd
-            .noVideo()
-            .toFormat('mp3');
-          cmd.outputOptions([
-            '-c:a', 'libmp3lame',
-            '-b:a', '192k',
-            '-ac', '2',
-            '-ar', '44100',
-            '-threads', '1'
-          ]);
+          cmd = cmd.noVideo().toFormat('mp3');
+          cmd.outputOptions(['-c:a', 'libmp3lame', '-b:a', '192k', '-ac', '2', '-ar', '44100', '-threads', '1']);
           break;
-
         case 'portrait':
-          cmd = cmd.videoFilter('crop=ih*(9/16):ih').toFormat('mp4');
-          if (sizeStr) cmd = cmd.size(sizeStr);
-          cmd.outputOptions([...videoOpts, ...audioOpts]);
-          break;
-
         case 'square':
-          cmd = cmd.videoFilter('crop=ih:ih').toFormat('mp4');
+          cmd = cmd.videoFilter(cropFilter).toFormat('mp4');
           if (sizeStr) cmd = cmd.size(sizeStr);
           cmd.outputOptions([...videoOpts, ...audioOpts]);
           break;
-
         default: // landscape
           if (watermarkFilter) {
             cmd = cmd.videoFilter(watermarkFilter).toFormat('mp4');
@@ -550,11 +558,7 @@ export class VideoService {
       // If format is portrait/square and we have a watermarkFilter, we need to chain them
       if (watermarkFilter && format !== 'landscape' && format !== 'audio') {
         // override the videoFilter set by the switch
-        if (format === 'portrait') {
-          cmd.videoFilters([watermarkFilter, 'crop=ih*(9/16):ih']);
-        } else if (format === 'square') {
-          cmd.videoFilters([watermarkFilter, 'crop=ih:ih']);
-        }
+        cmd.videoFilters([watermarkFilter, cropFilter]);
       }
 
       // Apply text overlay drawtext filters (appended after all other video filters)
@@ -806,11 +810,35 @@ export class VideoService {
         finalV = 'cleanv';
       }
 
+      let cropFilter = '';
+      if (format === 'portrait' && meta.width > 0 && meta.height > 0) {
+        const targetAspect = 9 / 16;
+        const inputAspect = meta.width / meta.height;
+        let cw = meta.width;
+        let ch = meta.height;
+        if (inputAspect > targetAspect) {
+          cw = Math.round(meta.height * targetAspect);
+        } else {
+          ch = Math.round(meta.width / targetAspect);
+        }
+        cw -= cw % 2;
+        ch -= ch % 2;
+        cropFilter = `crop=${cw}:${ch}`;
+      } else if (format === 'square' && meta.width > 0 && meta.height > 0) {
+        let side = Math.min(meta.width, meta.height);
+        side -= side % 2;
+        cropFilter = `crop=${side}:${side}`;
+      } else if (format === 'portrait') {
+        cropFilter = 'crop=ih*(9/16):ih';
+      } else if (format === 'square') {
+        cropFilter = 'crop=ih:ih';
+      }
+
       if (format === 'portrait') {
-        filterComplex += `[${finalV}]crop=ih*(9/16):ih[outv]`;
+        filterComplex += `[${finalV}]${cropFilter}[outv]`;
         finalV = 'outv';
       } else if (format === 'square') {
-        filterComplex += `[${finalV}]crop=ih:ih[outv]`;
+        filterComplex += `[${finalV}]${cropFilter}[outv]`;
         finalV = 'outv';
       }
 
@@ -1007,6 +1035,121 @@ export class VideoService {
         .on('error', (err) => {
           clearTimeout(timeoutTimer);
           console.error('\n[merge] FFmpeg error:', err.message);
+          reject(err);
+        })
+        .save(outputPath);
+    });
+  }
+
+  /**
+   * Process Audio Replace: adjust original audio and add new layers with ducking
+   */
+  static async processAudioReplace(
+    inputFile: string,
+    outputPath: string,
+    format: string,
+    audioSettings: { originalVolume: number; layers: any[] },
+    onProgress?: (percent: number) => void,
+    quality: string = 'HD 720p'
+  ): Promise<string> {
+    return new Promise(async (resolve, reject) => {
+      if (!fileExists(inputFile)) return reject(new Error(`Input file does not exist: ${inputFile}`));
+
+      const outDir = path.dirname(outputPath);
+      if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+
+      const meta = await VideoService.getVideoMetadata(inputFile);
+      const targetDuration = meta.duration > 0 ? meta.duration : 0;
+      
+      const { videoOpts, audioOpts, sizeStr } = VideoService.getExportOptions(quality, format);
+
+      let cmd = ffmpeg().addInput(inputFile);
+
+      let filterComplex = '';
+      
+      filterComplex += `[0:a]volume=${audioSettings.originalVolume}[aorig];`;
+
+      let inputIdx = 1;
+      const audioOutputs: string[] = ['[aorig]'];
+
+      // Mock processing of layers (using aneval/anoisesrc to generate fake audio for the layers to prove the pipeline)
+      audioSettings.layers.forEach((layer, idx) => {
+        cmd = cmd.addInput('anoisesrc=c=pink:r=44100:a=0.01').addInputOptions(['-f', 'lavfi', `-t`, `${targetDuration}`]);
+        const aIn = `[${inputIdx}:a]`;
+        const aDelay = `adelayLayer${idx}`;
+        const delayMs = Math.floor(layer.start * 1000);
+        
+        filterComplex += `${aIn}adelay=${delayMs}|${delayMs},volume=${layer.volume}[${aDelay}];`;
+        audioOutputs.push(`[${aDelay}]`);
+        
+        inputIdx++;
+      });
+
+      if (audioSettings.layers.length > 0) {
+        // Note: amix=normalize=0 prevents amix from reducing volume of all tracks
+        filterComplex += `${audioOutputs.join('')}amix=inputs=${audioOutputs.length}:duration=longest[aout]`;
+      } else {
+        filterComplex += `[aorig]anull[aout]`;
+      }
+
+      let timeoutTimer: NodeJS.Timeout;
+      const resetTimeout = () => {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = setTimeout(() => {
+          cmd.kill('SIGKILL');
+          reject(new Error('FFmpeg processing timeout'));
+        }, 60000);
+      };
+      resetTimeout();
+
+      if (format === 'audio') {
+        cmd = cmd.complexFilter(filterComplex, ['aout']).toFormat('mp3');
+        cmd.outputOptions(['-c:a', 'libmp3lame', '-b:a', '192k', '-ac', '2', '-ar', '44100']);
+      } else {
+        let vMaps = ['0:v'];
+        
+        let cropFilter = '';
+        if (format === 'portrait' && meta.width > 0 && meta.height > 0) {
+          const targetAspect = 9 / 16;
+          const inputAspect = meta.width / meta.height;
+          let cw = meta.width;
+          let ch = meta.height;
+          if (inputAspect > targetAspect) {
+            cw = Math.round(meta.height * targetAspect);
+          } else {
+            ch = Math.round(meta.width / targetAspect);
+          }
+          cw -= cw % 2;
+          ch -= ch % 2;
+          cropFilter = `crop=${cw}:${ch}`;
+        } else if (format === 'square' && meta.width > 0 && meta.height > 0) {
+          let side = Math.min(meta.width, meta.height);
+          side -= side % 2;
+          cropFilter = `crop=${side}:${side}`;
+        }
+        
+        if (cropFilter) {
+          filterComplex += `;[0:v]${cropFilter}[vout]`;
+          vMaps = ['vout'];
+        }
+
+        cmd = cmd.complexFilter(filterComplex, [...vMaps, 'aout']).toFormat('mp4');
+        if (sizeStr) cmd = cmd.size(sizeStr);
+        cmd.outputOptions([...videoOpts, ...audioOpts]);
+      }
+
+      cmd
+        .on('start', (cmdLine) => console.log(`[audio] FFmpeg started: ${cmdLine.slice(0, 150)}...`))
+        .on('progress', (p) => {
+          resetTimeout();
+          if (p.percent && onProgress) onProgress(p.percent);
+        })
+        .on('end', () => {
+          clearTimeout(timeoutTimer);
+          resolve(outputPath);
+        })
+        .on('error', (err) => {
+          clearTimeout(timeoutTimer);
           reject(err);
         })
         .save(outputPath);

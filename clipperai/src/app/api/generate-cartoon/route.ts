@@ -6,7 +6,7 @@ export async function POST(request: Request) {
     
     const body = await request.json();
 
-    const res = await fetch(`${backendUrl}/generate-cartoon`, {
+    const res = await fetch(`${backendUrl}/cartoon-engine/generate`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'

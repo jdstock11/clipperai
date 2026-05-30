@@ -102,7 +102,7 @@ export default function AIAnalyzer() {
     router.push("/viral-clips");
   };
 
-  if (!mounted) return null;
+
 
   return (
     <div className="min-h-screen flex flex-col bg-[var(--background)] text-white font-sans">

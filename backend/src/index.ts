@@ -8,7 +8,7 @@ import { Server as SocketIOServer } from 'socket.io';
 import YTDlpWrap from 'yt-dlp-wrap';
 import fs from 'fs';
 import { VideoService, DIRS } from './services/video.service';
-import { CartoonService } from './services/cartoon.service';
+
 import { renderQueue } from './queue/renderQueue';
 import multer from 'multer';
 import './workers/renderWorker';
@@ -16,6 +16,12 @@ import { executeYtDlpWithRetry, ensureYtDlpExists, getYtDlpWrap } from './utils/
 import authRoutes from './routes/auth.routes';
 import adminRoutes from './routes/admin.routes';
 import jwt from 'jsonwebtoken';
+import cartoonEngineRoutes from './routes/cartoonEngine.routes';
+// Cartoon engine worker is invoked on-demand via routes (no Redis required)
+
+declare global {
+  var ioInstance: any;
+}
 
 // ── JWT Middleware ───────────────────────────────────────────────────
 export interface AuthRequest extends express.Request {
@@ -25,7 +31,7 @@ export interface AuthRequest extends express.Request {
 const verifyUser = (req: AuthRequest, res: express.Response, next: express.NextFunction) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Unauthorized: Missing token' });
-  
+
   const token = authHeader.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Unauthorized: Invalid token format' });
 
@@ -91,6 +97,7 @@ const io = new SocketIOServer(server, {
   cors: corsOptions
 });
 app.set('io', io);
+global.ioInstance = io;
 
 io.on('connection', (socket) => {
   console.log('[socket] Admin connected:', socket.id);
@@ -115,6 +122,9 @@ const upload = multer({ dest: DIRS.temp, limits: { fileSize: 500 * 1024 * 1024 }
 // ── Auth & Admin Routes ───────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
+
+// ── Cartoon Engine Routes ────────────────────────────────────────────
+app.use('/api/cartoon-engine', cartoonEngineRoutes);
 
 // ── Upload video (Local File) ────────────────────────────────────────
 app.post('/api/upload-video', upload.single('video'), async (req, res) => {
@@ -169,8 +179,8 @@ app.post('/api/fetch-video', async (req, res) => {
     }
 
     const args = [
-      url, 
-      '--no-playlist', 
+      url,
+      '--no-playlist',
       '--dump-json',
       '--no-warnings'
     ];
@@ -219,7 +229,7 @@ app.post('/api/prepare-preview', async (req, res) => {
 
   // Initialize status
   previewStatusCache.set(previewId, { status: 'processing' });
-  
+
   // Return immediately to unblock the frontend
   res.json({ previewId, status: 'processing' });
 
@@ -382,7 +392,7 @@ app.post('/api/cut-video', verifyUser, async (req: AuthRequest, res: express.Res
         const rawFilename = filename.replace('_encoded', '_raw');
         const rawPath = path.join(DIRS.previews, rawFilename);
         const encodedPath = path.join(DIRS.previews, filename);
-        
+
         if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
           inputFile = rawPath;
           console.log(`[cut] Using high-quality source: ${rawFilename}`);
@@ -460,7 +470,7 @@ app.post('/api/merge-video', verifyUser, async (req: AuthRequest, res: express.R
     (async () => {
       try {
         const inputPaths: string[] = [];
-        
+
         for (const url of urls) {
           if (url.startsWith('/api/stream/')) {
             const filename = path.basename(url);
@@ -469,7 +479,7 @@ app.post('/api/merge-video', verifyUser, async (req: AuthRequest, res: express.R
             const rawPath = path.join(DIRS.previews, rawFilename);
             const encodedPath = path.join(DIRS.previews, filename);
             let fp = rawPath;
-            
+
             if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
               fp = rawPath;
               console.log(`[merge] Using high-quality source: ${rawFilename}`);
@@ -478,7 +488,7 @@ app.post('/api/merge-video', verifyUser, async (req: AuthRequest, res: express.R
             } else {
               fp = path.join(DIRS.uploads, filename);
             }
-            
+
             if (fs.existsSync(fp) && fs.statSync(fp).size > 0) {
               inputPaths.push(fp);
             } else {
@@ -508,17 +518,17 @@ app.post('/api/merge-video', verifyUser, async (req: AuthRequest, res: express.R
         const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
         const host = req.headers.host;
         const fileUrl = `${protocol}://${host}/uploads/${path.basename(outputFile)}`;
-        await prisma.job.update({ 
-          where: { id: jobRecord.id }, 
-          data: { status: 'COMPLETED', progress: 100, result: JSON.stringify({ fileUrl }) } 
+        await prisma.job.update({
+          where: { id: jobRecord.id },
+          data: { status: 'COMPLETED', progress: 100, result: JSON.stringify({ fileUrl }) }
         });
 
       } catch (err: any) {
         console.error('[merge] Async error:', err.message);
-        await prisma.job.update({ 
-          where: { id: jobRecord.id }, 
-          data: { status: 'FAILED', error: err.message } 
-        }).catch(() => {});
+        await prisma.job.update({
+          where: { id: jobRecord.id },
+          data: { status: 'FAILED', error: err.message }
+        }).catch(() => { });
       }
     })();
 
@@ -528,103 +538,7 @@ app.post('/api/merge-video', verifyUser, async (req: AuthRequest, res: express.R
   }
 });
 
-const cartoonJobs = new Map<string, any>();
-
-// ── AI Cartoon Generation ─────────────────────────────────────────────
-app.post('/api/generate-cartoon', async (req: AuthRequest, res: express.Response) => {
-  const { sourceUrl, streamUrl, style, startTime, endTime } = req.body;
-  if (!sourceUrl) {
-    return res.status(400).json({ error: 'Missing sourceUrl' });
-  }
-
-  const clipId = `cartoon_${Date.now()}`;
-  const userId = req.user?.id;
-
-  try {
-    const jobId = `job_cartoon_${Date.now()}`;
-    cartoonJobs.set(jobId, {
-      id: jobId,
-      type: 'RENDER_CARTOON',
-      status: 'PENDING',
-      progress: 0,
-      data: JSON.stringify({ sourceUrl, streamUrl, style, startTime, endTime })
-    });
-
-    res.json({ jobId, status: 'PROCESSING' });
-
-    // Direct processing (async)
-    (async () => {
-      try {
-        const updateJob = (data: any) => {
-          const current = cartoonJobs.get(jobId);
-          if (current) cartoonJobs.set(jobId, { ...current, ...data });
-        };
-
-        updateJob({ status: 'PROCESSING', progress: 10 });
-
-        // Resolve input file
-        let inputFile = '';
-        if (streamUrl) {
-          const filename = path.basename(streamUrl);
-          const rawFilename = filename.replace('_encoded', '_raw');
-          const rawPath = path.join(DIRS.previews, rawFilename);
-          const encodedPath = path.join(DIRS.previews, filename);
-          
-          if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
-            inputFile = rawPath;
-            console.log(`[cartoon] Using high-quality source: ${rawFilename}`);
-          } else if (fs.existsSync(encodedPath) && fs.statSync(encodedPath).size > 0) {
-            inputFile = encodedPath;
-          }
-        }
-        if (!inputFile) {
-          const existing = VideoService.findExistingPreview();
-          if (existing) inputFile = existing;
-        }
-        if (!inputFile) {
-          await VideoService.downloadPreview(sourceUrl, clipId);
-          const downloaded = VideoService.findExistingPreview();
-          if (downloaded) inputFile = downloaded;
-          else throw new Error('Could not obtain source video for export');
-        }
-
-        const outputFile = path.join(DIRS.uploads, `${clipId}.mp4`);
-
-        const onProgress = async (percent: number, stage?: string) => {
-          try {
-            updateJob({ progress: Math.round(percent), stage: stage || '' });
-          } catch { /* ignore */ }
-        };
-
-        // Call the AI frame-by-frame cartoon pipeline
-        await CartoonService.processCartoonAI(inputFile, outputFile, style || 'Anime', startTime, endTime, onProgress);
-
-        const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
-        const host = req.headers.host;
-        const fileUrl = `${protocol}://${host}/uploads/${path.basename(outputFile)}`;
-        const downloadUrl = `${protocol}://${host}/api/download/${path.basename(outputFile)}`;
-        const resultObj = { fileUrl, downloadUrl };
-        updateJob({ status: 'COMPLETED', progress: 100, result: JSON.stringify(resultObj) });
-
-      } catch (err: any) {
-        console.error('[cartoon] Async error:', err.message);
-        const current = cartoonJobs.get(jobId);
-        if (current) cartoonJobs.set(jobId, { ...current, status: 'FAILED', error: err.message });
-      }
-    })();
-
-  } catch (error: any) {
-    console.error('[cartoon] Route error:', error.message);
-    res.status(500).json({ error: 'Failed to initiate cartoon generation: ' + error.message });
-  }
-});
-
-// ── Cartoon Job polling endpoint ─────────────────────────────────────────────
-app.get('/api/cartoon-jobs/:id', (req, res) => {
-  const job = cartoonJobs.get(req.params.id);
-  if (!job) return res.status(404).json({ error: 'Job not found' });
-  res.json(job);
-});
+// ── Cartoon Generation Routes were removed and moved to cartoonEngine.routes.ts ──
 
 // ── Create clip (Asynchronous) for Viral Clips ─────────────────────────
 app.post('/api/create-clip', async (req: express.Request, res: express.Response) => {
@@ -661,7 +575,7 @@ app.post('/api/create-clip', async (req: express.Request, res: express.Response)
           const rawFilename = filename.replace('_encoded', '_raw');
           const rawPath = path.join(DIRS.previews, rawFilename);
           const encodedPath = path.join(DIRS.previews, filename);
-          
+
           if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) {
             inputFile = rawPath;
             console.log(`[clip] Using high-quality source: ${rawFilename}`);
@@ -693,7 +607,7 @@ app.post('/api/create-clip', async (req: express.Request, res: express.Response)
         // Auto-cleanup temp file after 30 minutes if not downloaded
         setTimeout(() => {
           if (fs.existsSync(outputFile)) {
-            try { fs.unlinkSync(outputFile); } catch (e) {}
+            try { fs.unlinkSync(outputFile); } catch (e) { }
           }
         }, 30 * 60 * 1000);
 
@@ -701,18 +615,18 @@ app.post('/api/create-clip', async (req: express.Request, res: express.Response)
         const host = req.headers.host;
         const fileUrl = `${protocol}://${host}/uploads/${path.basename(outputFile)}`;
         const downloadUrl = `${protocol}://${host}/api/download/${path.basename(outputFile)}`;
-        
-        await prisma.job.update({ 
-          where: { id: jobRecord.id }, 
-          data: { status: 'COMPLETED', progress: 100, result: JSON.stringify({ fileUrl, downloadUrl }) } 
+
+        await prisma.job.update({
+          where: { id: jobRecord.id },
+          data: { status: 'COMPLETED', progress: 100, result: JSON.stringify({ fileUrl, downloadUrl }) }
         });
 
       } catch (err: any) {
         console.error('[clip] Async error:', err.message);
-        await prisma.job.update({ 
-          where: { id: jobRecord.id }, 
-          data: { status: 'FAILED', error: err.message } 
-        }).catch(() => {});
+        await prisma.job.update({
+          where: { id: jobRecord.id },
+          data: { status: 'FAILED', error: err.message }
+        }).catch(() => { });
       }
     })();
 
@@ -722,17 +636,100 @@ app.post('/api/create-clip', async (req: express.Request, res: express.Response)
   }
 });
 
+// ── Process Audio Replace (Asynchronous) for Audio Studio ─────────────────────────
+app.post('/api/process-audio', async (req: express.Request, res: express.Response) => {
+  const { sourceUrl, streamUrl, format, quality, audioSettings } = req.body;
+  if (!sourceUrl || !audioSettings) {
+    return res.status(400).json({ error: 'Missing parameters' });
+  }
+
+  const clipId = `audio_clip_${Date.now()}`;
+  const ext = format === 'audio' ? 'mp3' : 'mp4';
+  const outputFile = path.join(DIRS.uploads, `${clipId}.${ext}`);
+  const jobId = `job_audio_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+  try {
+    const jobRecord = await prisma.job.create({
+      data: {
+        id: jobId,
+        type: 'PROCESS_AUDIO',
+        status: 'PROCESSING',
+        progress: 10,
+        data: JSON.stringify({ sourceUrl, format, audioSettings })
+      }
+    });
+
+    res.json({ jobId, clipId, status: 'PROCESSING' });
+
+    // Process asynchronously
+    (async () => {
+      try {
+        let inputFile = '';
+        if (streamUrl) {
+          const filename = path.basename(streamUrl);
+          const rawFilename = filename.replace('_encoded', '_raw');
+          const rawPath = path.join(DIRS.previews, rawFilename);
+          const encodedPath = path.join(DIRS.previews, filename);
+
+          if (fs.existsSync(rawPath) && fs.statSync(rawPath).size > 0) inputFile = rawPath;
+          else if (fs.existsSync(encodedPath) && fs.statSync(encodedPath).size > 0) inputFile = encodedPath;
+        }
+
+        if (!inputFile) {
+          const existing = VideoService.findExistingPreview();
+          if (existing) inputFile = existing;
+          else throw new Error('Could not obtain source video for export');
+        }
+
+        const onProgress = async (percent: number) => {
+          try {
+            await prisma.job.update({ where: { id: jobRecord.id }, data: { progress: Math.round(percent) } });
+          } catch { /* ignore */ }
+        };
+
+        await VideoService.processAudioReplace(inputFile, outputFile, format, audioSettings, onProgress, quality || 'HD 720p');
+
+        setTimeout(() => {
+          if (fs.existsSync(outputFile)) {
+            try { fs.unlinkSync(outputFile); } catch (e) { }
+          }
+        }, 30 * 60 * 1000);
+
+        const protocol = req.secure || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+        const host = req.headers.host;
+        const fileUrl = `${protocol}://${host}/uploads/${path.basename(outputFile)}`;
+        const downloadUrl = `${protocol}://${host}/api/download/${path.basename(outputFile)}`;
+
+        await prisma.job.update({
+          where: { id: jobRecord.id },
+          data: { status: 'COMPLETED', progress: 100, result: JSON.stringify({ fileUrl, downloadUrl }) }
+        });
+
+      } catch (err: any) {
+        console.error('[audio] Async error:', err.message);
+        await prisma.job.update({
+          where: { id: jobRecord.id },
+          data: { status: 'FAILED', error: err.message }
+        }).catch(() => { });
+      }
+    })();
+  } catch (error: any) {
+    console.error('[audio] Route error:', error.message);
+    res.status(500).json({ error: 'Failed to initiate audio processing: ' + error.message });
+  }
+});
+
 // ── Job polling endpoint ─────────────────────────────────────────────
 app.get('/api/jobs/:id', async (req, res) => {
   try {
     const job = await prisma.job.findUnique({ where: { id: req.params.id } });
     if (!job) return res.status(404).json({ error: 'Job not found' });
-    
+
     let parsedResult = null;
     if (job.result) {
       try { parsedResult = JSON.parse(job.result); } catch (e) { parsedResult = job.result; }
     }
-    
+
     res.json({
       ...job,
       result: parsedResult
@@ -758,7 +755,7 @@ app.get('/api/download/:filename', (req, res) => {
       // Auto cleanup after successful download
       setTimeout(() => {
         if (fs.existsSync(filePath)) {
-          try { fs.unlinkSync(filePath); } catch (e) {}
+          try { fs.unlinkSync(filePath); } catch (e) { }
         }
       }, 5000);
     }
@@ -773,13 +770,13 @@ app.post('/api/analyze-video', async (req, res) => {
   try {
     // Simulate processing time
     await new Promise(resolve => setTimeout(resolve, 1500));
-    
+
     // Fallback duration if not provided
-    const vidDuration = duration || 300; 
-    
+    const vidDuration = duration || 300;
+
     // Generate intelligent mock clips based on video duration
     const clips = [];
-    
+
     if (vidDuration > 60) {
       clips.push({
         id: 'clip_1',
@@ -791,7 +788,7 @@ app.post('/api/analyze-video', async (req, res) => {
         duration: 36,
         confidence: 96
       });
-      
+
       clips.push({
         id: 'clip_2',
         category: 'Emotional',

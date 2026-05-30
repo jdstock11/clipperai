@@ -6,7 +6,7 @@ import {
   ArrowLeft, Clapperboard, Film, Monitor, Smartphone, Square, Music,
   Loader2, Zap, Play, Pause, Download, Type, Sparkles, Wand2,
   Layers, CheckCircle2, Upload, Mic, Volume2, Heart, Laugh,
-  AlertTriangle, Flame, Eye, Palette, Clock, ChevronDown, X, Settings2
+  AlertTriangle, Flame, Eye, Palette, Clock, ChevronDown, X, Settings
 } from "lucide-react";
 
 const BACKEND_API = process.env.NEXT_PUBLIC_API_URL || '';
@@ -44,6 +44,8 @@ export default function AISceneGenerator() {
   const router = useRouter();
   const [mounted, setMounted] = useState(false);
   const [videoData, setVideoData] = useState<any>(null);
+  const [generatorMode, setGeneratorMode] = useState<"media" | "prompt">("media");
+  const [promptText, setPromptText] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
 
@@ -85,6 +87,10 @@ export default function AISceneGenerator() {
   const [resultReady, setResultReady] = useState(false);
   const [finalVideoUrl, setFinalVideoUrl] = useState("");
   const [finalDownloadUrl, setFinalDownloadUrl] = useState("");
+  const [isPreviewLoading, setIsPreviewLoading] = useState(true);
+  const [isPreviewError, setIsPreviewError] = useState(false);
+  const [isResultLoading, setIsResultLoading] = useState(true);
+  const [isResultError, setIsResultError] = useState(false);
 
   useEffect(() => {
     setMounted(true);
@@ -174,13 +180,17 @@ export default function AISceneGenerator() {
       const res = await fetch("/api/generate-cartoon", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sourceUrl: videoData.url,
-          streamUrl: videoData.streamUrl,
-          style: selectedStyle,
-          startTime: parseTime(startTime),
-          endTime: parseTime(endTime),
-        }),
+        body: JSON.stringify(
+          videoData.isPrompt
+            ? { prompt: promptText || videoData.prompt, style: selectedStyle }
+            : {
+                sourceUrl: videoData.url,
+                streamUrl: videoData.streamUrl,
+                style: selectedStyle,
+                startTime: parseTime(startTime),
+                endTime: parseTime(endTime),
+              }
+        ),
       });
 
       const data = await res.json();
@@ -208,9 +218,15 @@ export default function AISceneGenerator() {
               try { resultData = JSON.parse(resultData); } catch(e) {}
             }
 
-            const previewUrl = `${backendUrl}${resultData?.fileUrl || resultData}`;
-            const downloadUrl = resultData?.downloadUrl 
-              ? `${backendUrl}${resultData.downloadUrl}` 
+            const rawFileUrl = resultData?.fileUrl || resultData || "";
+            const rawDownloadUrl = resultData?.downloadUrl || "";
+            
+            const previewUrl = rawFileUrl.startsWith("http") 
+              ? rawFileUrl 
+              : `${backendUrl}${rawFileUrl}`;
+              
+            const downloadUrl = rawDownloadUrl 
+              ? (rawDownloadUrl.startsWith("http") ? rawDownloadUrl : `${backendUrl}${rawDownloadUrl}`)
               : `${backendUrl}/api/download/${previewUrl.split('/').pop()}`;
 
             setFinalVideoUrl(previewUrl);
@@ -236,7 +252,7 @@ export default function AISceneGenerator() {
     }
   };
 
-  if (!mounted) return null;
+
 
   return (
     <div className="min-h-screen flex flex-col text-white relative">
@@ -286,12 +302,35 @@ export default function AISceneGenerator() {
             <div className="space-y-5">
 
               {/* Upload / Preview Card */}
+              {/* Mode Toggle */}
+              <div className="flex bg-[var(--surface-2)] p-1 rounded-xl border border-[var(--border)]">
+                <button 
+                  onClick={() => {
+                    setGeneratorMode("prompt");
+                    if (videoData && !videoData.isPrompt) setVideoData(null);
+                  }}
+                  className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${generatorMode === "prompt" ? "bg-fuchsia-500/20 text-fuchsia-400" : "text-[var(--muted)] hover:text-white"}`}
+                >
+                  <Type className="w-4 h-4 inline-block mr-2" />
+                  Prompt Mode
+                </button>
+                <button 
+                  onClick={() => {
+                    setGeneratorMode("media");
+                    if (videoData && videoData.isPrompt) setVideoData(null);
+                  }}
+                  className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${generatorMode === "media" ? "bg-violet-500/20 text-violet-400" : "text-[var(--muted)] hover:text-white"}`}
+                >
+                  <Film className="w-4 h-4 inline-block mr-2" />
+                  Media Mode
+                </button>
+              </div>
+
               <div className="glass-strong rounded-2xl border border-[var(--border)] overflow-hidden">
                 <div className="aspect-video relative bg-black/60">
                   {isGenerating ? (
                     /* ── Generation Overlay ─────────────── */
                     <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center z-10 space-y-5">
-                      {/* Animated rings */}
                       <div className="relative w-28 h-28">
                         <div className="absolute inset-0 rounded-full border-2 border-fuchsia-500/20" />
                         <div className="absolute inset-2 rounded-full border-2 border-violet-500/30 animate-spin" style={{ animationDuration: "3s" }} />
@@ -307,17 +346,44 @@ export default function AISceneGenerator() {
                         <div className="text-sm text-[var(--muted)]">
                           {Math.floor(progress)}% — {aiStage || "Initializing AI..."}
                         </div>
-                        {progress > 0 && progress < 100 && (
-                          <div className="text-xs text-fuchsia-400 mt-2 font-medium bg-fuchsia-400/10 inline-block px-3 py-1 rounded-full border border-fuchsia-500/20">
-                            {progress < 15 ? "Setting up pipeline..." : `Est. ${Math.max(1, Math.floor((100 - progress) * 0.3))} min remaining`}
-                          </div>
-                        )}
                       </div>
                       <div className="w-64 h-2 bg-[var(--surface-2)] rounded-full overflow-hidden">
                         <div
                           className="h-full bg-gradient-to-r from-fuchsia-600 via-pink-500 to-violet-500 transition-all duration-500"
                           style={{ width: `${progress}%` }}
                         />
+                      </div>
+                    </div>
+                  ) : generatorMode === "prompt" ? (
+                    /* ── Prompt Mode ───────────── */
+                    <div className="absolute inset-0 flex flex-col p-5 bg-gradient-to-br from-[var(--surface)] to-[var(--background)]">
+                      <textarea 
+                        value={promptText}
+                        onChange={(e) => {
+                          setPromptText(e.target.value);
+                          if (e.target.value) {
+                            setVideoData({ title: "Text Prompt", isPrompt: true, prompt: e.target.value });
+                          } else {
+                            setVideoData(null);
+                          }
+                        }}
+                        placeholder="Example: Create a romantic emotional comedy cartoon where a poor boy tries to impress a rich girl with funny and emotional moments..."
+                        className="flex-1 w-full bg-black/40 border border-[var(--border)] rounded-xl p-4 text-sm text-white placeholder-[var(--muted)] outline-none focus:border-fuchsia-500 transition-colors resize-none mb-3"
+                      />
+                      <div className="flex flex-wrap gap-2">
+                        {["romantic comedy", "emotional breakup", "Bollywood romance", "father son story"].map((chip) => (
+                          <button 
+                            key={chip}
+                            onClick={() => {
+                              setPromptText(chip);
+                              setVideoData({ title: "Text Prompt", isPrompt: true, prompt: chip });
+                              simulateAIDetection();
+                            }}
+                            className="text-[10px] px-3 py-1.5 rounded-full bg-[var(--surface-2)] text-[var(--muted)] border border-[var(--border)] hover:border-fuchsia-500 hover:text-white transition-all font-medium"
+                          >
+                            {chip}
+                          </button>
+                        ))}
                       </div>
                     </div>
                   ) : videoData ? (
@@ -329,27 +395,29 @@ export default function AISceneGenerator() {
                             <Mic className="w-10 h-10 text-fuchsia-400" />
                           </div>
                           <div className="text-sm text-[var(--muted)] font-medium">{videoData.title}</div>
-                          {/* Audio waveform visual */}
-                          <div className="flex items-end gap-1 h-10">
-                            {Array.from({ length: 32 }).map((_, i) => (
-                              <div
-                                key={i}
-                                className="w-1.5 bg-gradient-to-t from-fuchsia-500 to-violet-400 rounded-full animate-pulse"
-                                style={{
-                                  height: `${12 + Math.random() * 28}px`,
-                                  animationDelay: `${i * 0.05}s`,
-                                  animationDuration: `${0.5 + Math.random() * 0.8}s`,
-                                }}
-                              />
-                            ))}
-                          </div>
                         </div>
                       ) : (
-                        <video
-                          src={videoData.streamUrl || videoData.url}
-                          className="absolute inset-0 w-full h-full object-contain bg-black"
-                          controls
-                        />
+                        <>
+                          {isPreviewLoading && !isPreviewError && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-black">
+                              <Loader2 className="w-8 h-8 text-fuchsia-400 animate-spin" />
+                            </div>
+                          )}
+                          {isPreviewError && (
+                            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 text-[var(--muted)]">
+                              <AlertTriangle className="w-10 h-10 text-rose-500 mb-2" />
+                              <span className="text-sm font-medium">Failed to load preview</span>
+                            </div>
+                          )}
+                          <video
+                            src={videoData.streamUrl || videoData.url}
+                            className={`absolute inset-0 w-full h-full object-contain bg-black ${isPreviewLoading || isPreviewError ? 'hidden' : ''}`}
+                            controls
+                            onLoadStart={() => { setIsPreviewLoading(true); setIsPreviewError(false); }}
+                            onLoadedData={() => setIsPreviewLoading(false)}
+                            onError={() => { setIsPreviewError(true); setIsPreviewLoading(false); }}
+                          />
+                        </>
                       )}
                     </>
                   ) : (
@@ -367,20 +435,6 @@ export default function AISceneGenerator() {
                       <div className="text-sm text-[var(--muted)] mb-3">
                         Drag & drop or click to browse
                       </div>
-                      <div className="flex gap-2">
-                        <span className="text-[10px] px-2 py-1 rounded-full bg-[var(--surface-2)] text-[var(--muted)] border border-[var(--border)]">MP4</span>
-                        <span className="text-[10px] px-2 py-1 rounded-full bg-[var(--surface-2)] text-[var(--muted)] border border-[var(--border)]">MOV</span>
-                        <span className="text-[10px] px-2 py-1 rounded-full bg-[var(--surface-2)] text-[var(--muted)] border border-[var(--border)]">MP3</span>
-                        <span className="text-[10px] px-2 py-1 rounded-full bg-[var(--surface-2)] text-[var(--muted)] border border-[var(--border)]">WAV</span>
-                        <span className="text-[10px] px-2 py-1 rounded-full bg-[var(--surface-2)] text-[var(--muted)] border border-[var(--border)]">WEBM</span>
-                      </div>
-                      {isUploading && (
-                        <div className="absolute bottom-4 left-4 right-4">
-                          <div className="h-1.5 bg-[var(--surface-2)] rounded-full overflow-hidden">
-                            <div className="h-full bg-fuchsia-500 animate-pulse rounded-full" style={{ width: "60%" }} />
-                          </div>
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>
@@ -482,7 +536,7 @@ export default function AISceneGenerator() {
               {videoData && (
                 <div className="glass-strong rounded-2xl border border-[var(--border)] p-5">
                   <div className="flex items-center gap-2 mb-4">
-                    <Settings2 className="w-4 h-4 text-pink-400" />
+                    <Settings className="w-4 h-4 text-pink-400" />
                     <span className="font-bold text-sm">Editor Features</span>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
@@ -630,11 +684,29 @@ export default function AISceneGenerator() {
                     <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                     <span className="font-bold text-sm text-emerald-300">Scene Ready!</span>
                   </div>
-                  <video
-                    src={finalVideoUrl}
-                    controls
-                    className="w-full aspect-video rounded-xl mb-3 bg-black"
-                  />
+                  <div className="relative w-full aspect-video rounded-xl mb-3 bg-black overflow-hidden">
+                    {isResultLoading && !isResultError && (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <Loader2 className="w-8 h-8 text-emerald-400 animate-spin" />
+                      </div>
+                    )}
+                    {isResultError && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-[var(--muted)]">
+                        <AlertTriangle className="w-10 h-10 text-rose-500 mb-2" />
+                        <span className="text-sm font-medium text-center px-4">
+                          Preview unavailable.<br/>You can still try downloading the file.
+                        </span>
+                      </div>
+                    )}
+                    <video
+                      src={finalVideoUrl}
+                      controls
+                      className={`w-full h-full object-contain ${isResultLoading || isResultError ? 'hidden' : ''}`}
+                      onLoadStart={() => { setIsResultLoading(true); setIsResultError(false); }}
+                      onLoadedData={() => setIsResultLoading(false)}
+                      onError={() => { setIsResultError(true); setIsResultLoading(false); }}
+                    />
+                  </div>
                   <a
                     href={finalDownloadUrl || finalVideoUrl}
                     download

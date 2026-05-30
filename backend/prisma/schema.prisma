@@ -194,3 +194,17 @@ model LoginLog {
   @@index([userId])
   @@map("login_logs")
 }
+
+model AnimationJob {
+  id            String   @id @default(cuid())
+  userId        String?
+  prompt        String
+  storyLine     String?
+  progressSteps String?
+  videoUrl      String?
+  status        String   @default("PENDING")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("animation_jobs")
+}

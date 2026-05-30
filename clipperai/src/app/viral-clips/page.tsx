@@ -363,7 +363,7 @@ export default function Editor() {
                 <>
                   <video
                     ref={videoRef}
-                    src={streamUrl ? `${BACKEND_API.replace('/api', '')}${streamUrl}` : undefined}
+                    src={streamUrl ? (streamUrl.startsWith('http') ? streamUrl : `${BACKEND_API.replace('/api', '')}${streamUrl}`) : undefined}
                     className="w-full h-full object-contain"
                     onTimeUpdate={handleTimeUpdate}
                     onLoadedMetadata={() => {
@@ -518,7 +518,7 @@ export default function Editor() {
               </div>
               {thumbnail && (
                 <img
-                  src={`${BACKEND_API.replace('/api', '')}${thumbnail}`}
+                  src={thumbnail.startsWith('http') ? thumbnail : `${BACKEND_API.replace('/api', '')}${thumbnail}`}
                   alt="Thumbnail"
                   className="w-full aspect-video object-cover rounded-lg border border-[var(--border)]"
                 />

@@ -23,13 +23,16 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     }
   }, [pathname, router]);
 
-  if (!isAuthenticated) {
-    return (
-      <div className="flex h-screen w-full items-center justify-center bg-[#050505]">
-        <div className="h-12 w-12 animate-spin rounded-full border-b-2 border-cyan-500"></div>
+  return (
+    <>
+      {!isAuthenticated && (
+        <div className="fixed inset-0 z-50 flex h-screen w-full items-center justify-center bg-[#050505]">
+          <div className="h-12 w-12 animate-spin rounded-full border-b-2 border-cyan-500"></div>
+        </div>
+      )}
+      <div style={{ display: isAuthenticated ? 'block' : 'none' }}>
+        {children}
       </div>
-    );
-  }
-
-  return <>{children}</>;
+    </>
+  );
 }

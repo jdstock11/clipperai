@@ -321,7 +321,7 @@ export default function Editor() {
                 <>
                   <video
                     ref={videoRef}
-                    src={streamUrl ? `${BACKEND_API.replace('/api', '')}${streamUrl}` : undefined}
+                    src={streamUrl ? (streamUrl.startsWith('http') ? streamUrl : `${BACKEND_API.replace('/api', '')}${streamUrl}`) : undefined}
                     className="w-full h-full object-contain pointer-events-none"
                     onTimeUpdate={handleTimeUpdate}
                   />

@@ -6,7 +6,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     
     const { id } = await params;
     
-    const res = await fetch(`${backendUrl}/cartoon-jobs/${id}`, {
+    const res = await fetch(`${backendUrl}/cartoon-engine/status/${id}`, {
       method: 'GET',
     });
 

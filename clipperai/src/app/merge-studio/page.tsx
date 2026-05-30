@@ -208,7 +208,7 @@ export default function MergeStudio() {
 
   const totalDuration = clips.reduce((acc, c) => acc + c.duration, 0);
 
-  if (!mounted) return null;
+
 
   return (
     <div className="min-h-screen flex flex-col bg-[#050505] text-white">

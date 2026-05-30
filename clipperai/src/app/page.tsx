@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import {
   Search, Scissors, Zap, Film, Wand2, Music, Download,
-  MonitorPlay, Headphones, Sparkles, Layers, ArrowRight, Upload, Palette, Clapperboard
+  MonitorPlay, Headphones, Sparkles, Layers, ArrowRight, Upload, Palette, Clapperboard, Mic
 } from "lucide-react";
 import { useDropzone } from "react-dropzone";
 import { useRouter } from "next/navigation";
@@ -23,6 +23,7 @@ export default function Home() {
   const [analyzerUrl, setAnalyzerUrl] = useState("");
   const [cartoonUrl, setCartoonUrl] = useState("");
   const [sceneUrl, setSceneUrl] = useState("");
+  const [audioUrl, setAudioUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -200,7 +201,7 @@ export default function Home() {
     router.push("/merge-studio");
   };
 
-  if (!mounted) return null;
+
 
   return (
     <div className="min-h-screen flex flex-col relative text-white">
@@ -477,8 +478,65 @@ export default function Home() {
 
 
 
+          {/* Card 5: AI Audio Replace Studio */}
+          <div className="glass-strong rounded-2xl p-6 border border-[var(--border)] hover:border-amber-500/50 transition-all flex flex-col items-center text-center group relative overflow-hidden">
+            <div className="absolute top-0 right-0 bg-amber-500 text-black text-[10px] font-bold px-3 py-1 rounded-bl-xl tracking-widest uppercase shadow-md">New</div>
+            <div className="w-14 h-14 rounded-full bg-amber-500/10 text-amber-400 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-[0_0_20px_rgba(245,158,11,0.2)]">
+              <Mic className="w-7 h-7" />
+            </div>
+            <h2 className="text-2xl font-bold mb-2">AI Audio Replace Studio</h2>
+            <p className="text-[var(--muted)] text-sm mb-6 flex-1">
+              Remove original audio and replace it with music, voiceovers, dialogues, or cinematic sound.
+            </p>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              handleFetchVideo(audioUrl, "/audio-studio");
+            }} className="w-full relative">
+              <div className="relative flex items-center bg-black/40 border border-[var(--border)] rounded-xl p-1 gap-1 focus-within:border-amber-500 transition-colors">
+                <input
+                  type="url"
+                  required
+                  value={audioUrl}
+                  onChange={(e) => setAudioUrl(e.target.value)}
+                  placeholder="Paste URL or upload..."
+                  className="w-full bg-transparent outline-none pl-4 pr-3 py-3 text-sm text-white placeholder-[var(--muted)]"
+                  disabled={isLoading}
+                />
+                {isLoading ? (
+                  <button type="button" onClick={handleCancel} className="bg-red-500/20 text-red-400 hover:bg-red-500/40 px-4 py-3 rounded-lg text-sm font-bold flex items-center justify-center min-w-[100px] transition-colors">
+                    Cancel
+                  </button>
+                ) : (
+                  <button type="submit" className="bg-gradient-to-r from-amber-500 to-orange-500 hover:opacity-90 px-4 py-3 rounded-lg text-sm font-bold flex items-center justify-center min-w-[100px] text-white transition-opacity shadow-[0_0_15px_rgba(245,158,11,0.3)]">
+                    Open
+                  </button>
+                )}
+              </div>
+            </form>
+            <div className="w-full mt-3">
+              <button 
+                onClick={() => document.getElementById('audioUpload')?.click()}
+                disabled={isUploading}
+                className="w-full py-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] text-xs text-[var(--muted)] hover:text-white hover:border-amber-500 transition-all flex items-center justify-center gap-2"
+              >
+                {isUploading ? (
+                  <><span className="animate-spin w-3 h-3 border border-[var(--muted)] border-t-transparent rounded-full" /> Uploading...</>
+                ) : (
+                  <>Or Upload Personal Video</>
+                )}
+              </button>
+              <input 
+                type="file" 
+                id="audioUpload" 
+                accept="video/*" 
+                className="hidden" 
+                onChange={(e) => handleUploadToDestination(e, "/audio-studio")} 
+              />
+            </div>
+          </div>
+
           {/* Card 6: AI Cartoon Scene Generator */}
-          <div className="glass-strong rounded-2xl p-6 border border-[var(--border)] hover:border-fuchsia-500/50 transition-all flex flex-col items-center text-center group relative overflow-hidden md:col-span-2 mx-auto w-full max-w-2xl">
+          <div className="glass-strong rounded-2xl p-6 border border-[var(--border)] hover:border-fuchsia-500/50 transition-all flex flex-col items-center text-center group relative overflow-hidden">
             <div className="absolute top-0 right-0 bg-gradient-to-r from-fuchsia-500 to-violet-500 text-white text-[10px] font-bold px-3 py-1 rounded-bl-xl tracking-widest uppercase shadow-md">New</div>
             <div className="absolute inset-0 bg-gradient-to-br from-fuchsia-500/5 to-violet-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
             <div className="w-14 h-14 rounded-full bg-fuchsia-500/10 text-fuchsia-400 flex items-center justify-center mb-4 group-hover:scale-110 transition-transform shadow-[0_0_20px_rgba(217,70,239,0.2)]">
@@ -486,19 +544,24 @@ export default function Home() {
             </div>
             <h2 className="text-2xl font-bold mb-1">AI Cartoon Scene Generator</h2>
             <p className="text-[var(--muted)] text-sm mb-6 flex-1">
-              Turn dialogues, emotions and audio into cinematic animated AI scenes.
+              Turn text prompts, dialogues, emotions and audio into cinematic animated AI scenes.
             </p>
             <form onSubmit={(e) => {
               e.preventDefault();
-              handleFetchVideo(sceneUrl, "/ai-scene-generator");
+              if (sceneUrl.startsWith('http')) {
+                handleFetchVideo(sceneUrl, "/ai-scene-generator");
+              } else {
+                sessionStorage.setItem("videoData", JSON.stringify({ isPrompt: true, prompt: sceneUrl }));
+                router.push("/ai-scene-generator");
+              }
             }} className="w-full relative">
               <div className="relative flex items-center bg-black/40 border border-[var(--border)] rounded-xl p-1 gap-1 focus-within:border-fuchsia-500 transition-colors">
                 <input
-                  type="url"
+                  type="text"
                   required
                   value={sceneUrl}
                   onChange={(e) => setSceneUrl(e.target.value)}
-                  placeholder="Paste URL or upload audio/video..."
+                  placeholder="Write a prompt, paste URL or upload..."
                   className="w-full bg-transparent outline-none pl-4 pr-3 py-3 text-sm text-white placeholder-[var(--muted)]"
                   disabled={isLoading}
                 />
